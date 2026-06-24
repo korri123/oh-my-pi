@@ -10,7 +10,12 @@ import type { ModelManagerOptions } from "../model-manager";
 import { getBundledModels } from "../models";
 import type { Api, FetchImpl, Model, ModelSpec, Provider, ThinkingConfig } from "../types";
 import { isAnthropicOAuthToken, isRecord, toBoolean, toNumber, toPositiveNumber } from "../utils";
-import { COPILOT_API_HEADERS, getGitHubCopilotBaseUrl, parseGitHubCopilotApiKey } from "../wire/github-copilot";
+import {
+	COPILOT_API_HEADERS,
+	getGitHubCopilotBaseUrl,
+	isPersonalGitHubCopilotBaseUrl,
+	parseGitHubCopilotApiKey,
+} from "../wire/github-copilot";
 import { createBundledReferenceMap, createReferenceResolver, toModelSpec } from "./bundled-references";
 
 const MODELS_DEV_URL = "https://models.dev/api.json";
@@ -566,7 +571,9 @@ const UMANS_REASONING_EFFORT_BY_LEVEL: Record<string, Effort> = {
 	medium: Effort.Medium,
 	high: Effort.High,
 	xhigh: Effort.XHigh,
+	max: Effort.XHigh,
 };
+const UMANS_MAX_REASONING_EFFORT_MAP = { [Effort.XHigh]: "max" } as const;
 const UMANS_DEFAULT_REASONING_EFFORTS = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh] as const;
 const UMANS_VIA_HANDOFF_MODEL_IDS = ["umans-glm-5.1", "umans-glm-5.2"] as const;
 
@@ -620,10 +627,20 @@ function mapUmansReasoningEfforts(value: unknown): readonly Effort[] {
 	return efforts.length > 0 ? efforts : UMANS_DEFAULT_REASONING_EFFORTS;
 }
 
+function umansHasMaxReasoningLevel(value: unknown): boolean {
+	return isRecord(value) && Array.isArray(value.levels) && value.levels.includes("max");
+}
+
 function mapUmansThinkingConfig(value: unknown): ThinkingConfig | undefined {
 	if (!umansReasoningSupported(value)) return undefined;
 	const efforts = mapUmansReasoningEfforts(value);
-	const thinking: ThinkingConfig = { mode: "budget", efforts };
+	const thinking: ThinkingConfig = {
+		mode: umansHasMaxReasoningLevel(value) ? "anthropic-budget-effort" : "budget",
+		efforts,
+	};
+	if (thinking.mode === "anthropic-budget-effort") {
+		thinking.effortMap = UMANS_MAX_REASONING_EFFORT_MAP;
+	}
 	if (isRecord(value)) {
 		if (value.can_disable === false) {
 			thinking.requiresEffort = true;
@@ -3113,10 +3130,16 @@ export function githubCopilotModelManagerOptions(config?: GithubCopilotModelMana
 								? entry.name
 								: (reference?.name ?? defaults.name);
 						const api = inferCopilotApi(defaults.id);
+						// `supports.vision` reports the model's intrinsic capability, but
+						// the business/enterprise endpoints respond `400 vision is not
+						// supported` on image inputs. Only honour the flag for the
+						// canonical personal-Copilot host.
 						const supportsVision = extractCopilotSupportsVision(entry);
-						const input: ModelSpec<Api>["input"] = supportsVision
-							? ["text", "image"]
-							: (reference?.input ?? defaults.input);
+						const input: ModelSpec<Api>["input"] = isPersonalGitHubCopilotBaseUrl(baseUrl)
+							? supportsVision
+								? ["text", "image"]
+								: (reference?.input ?? defaults.input)
+							: ["text"];
 						// With COPILOT_API_HEADERS the served window is the long-context
 						// ceiling; the default tier ends at token_prices.default.context_max
 						// prompt tokens. Cap the base entry to the default tier — the long
