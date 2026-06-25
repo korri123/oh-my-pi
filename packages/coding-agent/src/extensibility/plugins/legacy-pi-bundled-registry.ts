@@ -331,9 +331,11 @@ import * as bundledPiCodingAgentConfigResolveConfigValue from "@oh-my-pi/pi-codi
 import * as bundledPiCodingAgentConfigSettings from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as bundledPiCodingAgentConfigSettingsSchema from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import * as bundledPiCodingAgentDap from "@oh-my-pi/pi-coding-agent/dap";
+import * as bundledPiCodingAgentDapAdapterServerResolution from "@oh-my-pi/pi-coding-agent/dap/adapter-server-resolution";
 import * as bundledPiCodingAgentDapClient from "@oh-my-pi/pi-coding-agent/dap/client";
 import * as bundledPiCodingAgentDapConfig from "@oh-my-pi/pi-coding-agent/dap/config";
 import * as bundledPiCodingAgentDapSession from "@oh-my-pi/pi-coding-agent/dap/session";
+import * as bundledPiCodingAgentDapTransports from "@oh-my-pi/pi-coding-agent/dap/transports";
 import * as bundledPiCodingAgentDapTypes from "@oh-my-pi/pi-coding-agent/dap/types";
 import * as bundledPiCodingAgentDebug from "@oh-my-pi/pi-coding-agent/debug";
 import * as bundledPiCodingAgentDebugLogFormatting from "@oh-my-pi/pi-coding-agent/debug/log-formatting";
@@ -1808,6 +1810,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/config/settings": bundledPiCodingAgentConfigSettings as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/dap/adapter-server-resolution":
+		bundledPiCodingAgentDapAdapterServerResolution as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/dap/client": bundledPiCodingAgentDapClient as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -1815,6 +1819,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/dap/session": bundledPiCodingAgentDapSession as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/dap/transports": bundledPiCodingAgentDapTransports as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/dap/types": bundledPiCodingAgentDapTypes as unknown as Readonly<Record<string, unknown>>,
