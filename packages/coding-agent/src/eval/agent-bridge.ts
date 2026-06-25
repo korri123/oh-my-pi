@@ -51,6 +51,7 @@ const agentArgsSchema = type({
 	"apply?": "boolean",
 	"merge?": "boolean",
 	"handle?": "boolean",
+	"advisor?": "boolean",
 });
 
 interface EvalAgentArgs {
@@ -84,6 +85,15 @@ interface EvalAgentArgs {
 	merge?: boolean;
 	/** True when a runtime helper will return an `agent://` handle backed by the output artifacts. */
 	handle?: boolean;
+	/**
+	 * Force-attach an advisor to this subagent for the duration of its run.
+	 * When `true`, overrides both `advisor.enabled` and `advisor.subagents`
+	 * for this spawn (so it works even when subagent advising is globally
+	 * off). Still a no-op if no model resolves for the `advisor` role. Omit
+	 * to inherit the parent session's advisor settings. Each advised turn
+	 * runs a second model, so a wide `parallel()` fan-out multiplies spend.
+	 */
+	advisor?: boolean;
 }
 
 export interface EvalAgentBridgeOptions {
@@ -386,6 +396,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 		// regardless of the inherited session setting.
 		maxRuntimeMs: 0,
 		keepAlive: false,
+		forceAdvisor: parsed.advisor === true,
 		mcpManager,
 		contextFiles,
 		skills: availableSkills,

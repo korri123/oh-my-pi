@@ -519,7 +519,7 @@ function completion(prompt::String; model="default", system=nothing, schema=noth
     return schema === nothing ? text : Main.json_parse(string(text))
 end
 
-function agent(prompt::String; agent="task", model=nothing, label=nothing, schema=nothing, isolated=nothing, apply=nothing, merge=nothing, handle=false, kwargs...)
+function agent(prompt::String; agent="task", model=nothing, label=nothing, schema=nothing, isolated=nothing, apply=nothing, merge=nothing, handle=false, advisor=nothing, kwargs...)
     args_dict = Dict{String, Any}("prompt" => prompt)
     if agent !== nothing
         args_dict["agent"] = agent
@@ -543,6 +543,9 @@ function agent(prompt::String; agent="task", model=nothing, label=nothing, schem
     end
     if merge !== nothing
         args_dict["merge"] = Bool(merge)
+    end
+    if advisor !== nothing
+        args_dict["advisor"] = Bool(advisor)
     end
     handle_result = handle
     for (k, v) in kwargs

@@ -248,6 +248,19 @@ describe("runEvalAgent", () => {
 		expect(options.enableLsp).toBe(false);
 		expect(options.keepAlive).toBe(false);
 	});
+	it("threads advisor=true into forceAdvisor and omits it otherwise", async () => {
+		mockAgents();
+		const runSpy = vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => singleResult(options));
+		const session = makeSession();
+
+		await runEvalAgent({ prompt: "advised", advisor: true }, { session });
+		await runEvalAgent({ prompt: "plain" }, { session });
+		await runEvalAgent({ prompt: "off", advisor: false }, { session });
+
+		expect(runSpy.mock.calls[0]?.[0].forceAdvisor).toBe(true);
+		expect(runSpy.mock.calls[1]?.[0].forceAdvisor).toBe(false);
+		expect(runSpy.mock.calls[2]?.[0].forceAdvisor).toBe(false);
+	});
 
 	it("maps successful and failed subagent results", async () => {
 		mockAgents();

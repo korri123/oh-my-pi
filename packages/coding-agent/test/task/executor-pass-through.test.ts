@@ -153,3 +153,45 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(forwarded?.parentTaskPrefix).toBe("ChildAgent");
 	});
 });
+
+describe("runSubprocess forceAdvisor override", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("forces advisor.enabled and advisor.subagents on for the child, overriding advisor.subagents=false", async () => {
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const parentSettings = Settings.isolated();
+		parentSettings.set("advisor.enabled", false);
+		parentSettings.set("advisor.subagents", false);
+
+		const result = await runSubprocess({ ...baseOptions, settings: parentSettings, forceAdvisor: true });
+
+		expect(result.exitCode).toBe(0);
+		const forwarded = spy.mock.calls[0]?.[0];
+		// The child session's settings — not the parent's — must carry both flags
+		// on. advisor.subagents only gates inside AgentSession, so a child built
+		// from the parent's `false` would silently never advise.
+		expect(forwarded?.settings?.get("advisor.enabled")).toBe(true);
+		expect(forwarded?.settings?.get("advisor.subagents")).toBe(true);
+		// Parent settings are untouched — the override is per-spawn.
+		expect(parentSettings.get("advisor.enabled")).toBe(false);
+		expect(parentSettings.get("advisor.subagents")).toBe(false);
+	});
+
+	it("inherits parent advisor settings when forceAdvisor is not set", async () => {
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const parentSettings = Settings.isolated();
+		parentSettings.set("advisor.enabled", false);
+		parentSettings.set("advisor.subagents", false);
+
+		const result = await runSubprocess({ ...baseOptions, settings: parentSettings });
+
+		expect(result.exitCode).toBe(0);
+		const forwarded = spy.mock.calls[0]?.[0];
+		expect(forwarded?.settings?.get("advisor.enabled")).toBe(false);
+		expect(forwarded?.settings?.get("advisor.subagents")).toBe(false);
+	});
+});

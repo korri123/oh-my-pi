@@ -392,7 +392,7 @@ unless defined?($__omp_prelude_loaded) && $__omp_prelude_loaded
     schema.nil? ? text : JSON.parse(text)
   end
 
-  def agent(prompt, agent: "task", model: nil, label: nil, schema: nil, isolated: nil, apply: nil, merge: nil, handle: false)
+  def agent(prompt, agent: "task", model: nil, label: nil, schema: nil, isolated: nil, apply: nil, merge: nil, handle: false, advisor: nil)
     args = { "prompt" => prompt }
     args["agent"] = agent unless agent.nil?
     args["model"] = model unless model.nil?
@@ -403,6 +403,7 @@ unless defined?($__omp_prelude_loaded) && $__omp_prelude_loaded
     args["isolated"] = !!isolated unless isolated.nil?
     args["apply"] = !!apply unless apply.nil?
     args["merge"] = !!merge unless merge.nil?
+    args["advisor"] = !!advisor unless advisor.nil?
     # Tell the bridge a handle is wanted so it preserves the backing artifacts.
     args["handle"] = true if handle
     res = OmpBridge.call("__agent__", args)

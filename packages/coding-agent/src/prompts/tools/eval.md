@@ -39,9 +39,9 @@ tool.<name>(args) → unknown
     Invoke any session tool; `args` = its parameter object.
 completion(prompt, model?="default", system?=None, schema?=None) → str | dict
     Oneshot, stateless (no history/tools). `model`: "smol" fast | "default" session | "slow" most capable. `schema` (JSON-Schema) → structured output, parsed object.
-{{#if spawns}}agent(prompt, agent?="task", model?=None, label?=None, schema?=None, handle?=False) → str | dict
-    Run a subagent → final output. `agent` picks another discovered agent; `schema` as in completion(). Background via `local://` files named in the prompt. `handle` → DAG node dict { text, output, handle: "agent://<id>", id, agent } (parsed under `data` when `schema` set).
-{{#if js}}    JS: options are ONE trailing object — agent(prompt, { agent, schema, handle }).
+{{#if spawns}}agent(prompt, agent?="task", model?=None, label?=None, schema?=None, handle?=False, advisor?=None) → str | dict
+    Run a subagent → final output. `agent` picks another discovered agent; `schema` as in completion(). Background via `local://` files named in the prompt. `handle` → DAG node dict { text, output, handle: "agent://<id>", id, agent } (parsed under `data` when `schema` set). `advisor=True` force-attaches an advisor to the spawn (overrides advisor.enabled/subagents settings; no-op without an advisor-role model; doubles per-turn model spend — costly across wide fan-outs).
+{{#if js}}    JS: options are ONE trailing object — agent(prompt, { agent, schema, handle, advisor }).
 {{/if}}
 {{/if}}
 parallel(thunks) → list

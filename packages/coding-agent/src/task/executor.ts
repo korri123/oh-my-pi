@@ -374,6 +374,15 @@ export interface ExecutorOptions {
 	 * set this false so disposal unregisters them instead of leaving idle peers.
 	 */
 	keepAlive?: boolean;
+	/**
+	 * Force-attach an advisor to this subagent regardless of the inherited
+	 * `advisor.enabled` / `advisor.subagents` settings. Set by the eval
+	 * `agent(advisor=True)` bridge for per-call opt-in. When true, the
+	 * subagent's isolated settings are overridden so both flags are on (still
+	 * a no-op if no `advisor` role model resolves). Omitted/false inherits the
+	 * parent settings.
+	 */
+	forceAdvisor?: boolean;
 }
 
 function parseStringifiedJson(value: unknown): unknown {
@@ -1750,9 +1759,17 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	}
 
 	const settings = options.settings ?? Settings.isolated();
+	const settingsOverrides: Partial<Record<SettingPath, unknown>> = {};
+	if (agent.readSummarize === false) settingsOverrides["read.summarize.enabled"] = false;
+	if (options.forceAdvisor) {
+		// Per-call advisor opt-in (eval `agent(advisor=True)`). Force both flags
+		// on so the advisor attaches even when subagent advising is globally off.
+		settingsOverrides["advisor.enabled"] = true;
+		settingsOverrides["advisor.subagents"] = true;
+	}
 	const subagentSettings = createSubagentSettings(
 		settings,
-		agent.readSummarize === false ? { "read.summarize.enabled": false } : undefined,
+		Object.keys(settingsOverrides).length > 0 ? settingsOverrides : undefined,
 	);
 	const maxRecursionDepth = settings.get("task.maxRecursionDepth") ?? 2;
 	// Tailored specialist identity for this spawn. `subagentRole` is the full

@@ -423,7 +423,7 @@ if "__omp_prelude_loaded__" not in globals():
         text = res.get("text") if isinstance(res, dict) else res
         return json.loads(text) if schema is not None else text
 
-    def agent(prompt, *, agent="task", model=None, label=None, schema=None, isolated=None, apply=None, merge=None, handle=False):
+    def agent(prompt, *, agent="task", model=None, label=None, schema=None, isolated=None, apply=None, merge=None, handle=False, advisor=None):
         """Run a subagent and return its final output.
 
         `agent` selects the subagent definition (default "task"). Pass
@@ -461,6 +461,13 @@ if "__omp_prelude_loaded__" not in globals():
         ``"isolation_summary"``. If
         the bridge returns no recoverable id the node still resolves with
         ``handle=None`` — the helper never throws.
+
+        Set ``advisor=True`` to force-attach an advisor to the subagent for
+        this call, overriding the ``advisor.enabled``/``advisor.subagents``
+        settings (so it works even when subagent advising is globally off).
+        No-op if no model is configured for the ``advisor`` role. Each advised
+        turn runs a second model, so a wide ``parallel()`` fan-out multiplies
+        spend. Omit to inherit the session's advisor settings.
         """
         args = {"prompt": prompt}
         if agent is not None:
@@ -479,6 +486,8 @@ if "__omp_prelude_loaded__" not in globals():
             args["merge"] = bool(merge)
         if handle:
             args["handle"] = True
+        if advisor is not None:
+            args["advisor"] = bool(advisor)
         res = _bridge_call("__agent__", args)
         text = res.get("text") if isinstance(res, dict) else res
         parsed = json.loads(text) if schema is not None else text

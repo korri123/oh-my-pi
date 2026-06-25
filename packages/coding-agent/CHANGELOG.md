@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added an `advisor` option to the eval `agent()` helper (`agent(prompt, advisor=True)` / `agent(prompt, { advisor: true })`). It force-attaches an advisor to that single spawn by overriding both `advisor.enabled` and `advisor.subagents` for the child session, so advising works even when subagent advising is globally off. No-op when no `advisor`-role model resolves. Omit to inherit the parent session's advisor settings. Each advised turn runs a second model, so a wide `parallel()` fan-out multiplies spend.
+
 ## [16.1.19] - 2026-06-25
 
 ### Fixed
