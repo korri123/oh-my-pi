@@ -12,6 +12,7 @@ export interface OAuthEndpoints {
 	clientId?: string;
 	scopes?: string;
 	resource?: string;
+	registrationEndpoint?: string;
 }
 
 export interface AuthDetectionResult {
@@ -100,7 +101,10 @@ export function extractOAuthEndpoints(error: Error): OAuthEndpoints | null {
 			(obj.resource_uri as string | undefined) ||
 			(obj.resourceUri as string | undefined);
 
-		return { authorizationUrl, tokenUrl, clientId, scopes, resource };
+		const registrationEndpoint =
+			(obj.registration_endpoint as string | undefined) || (obj.registrationEndpoint as string | undefined);
+
+		return { authorizationUrl, tokenUrl, clientId, scopes, resource, registrationEndpoint };
 	};
 
 	const clientIdFromAuthUrl = (authorizationUrl: string): string | undefined => {
@@ -258,7 +262,7 @@ export async function discoverOAuthEndpoints(
 	serverUrl: string,
 	authServerUrl?: string,
 	resourceMetadataUrl?: string,
-	opts?: { fetch?: FetchImpl; protectedResource?: string },
+	opts?: { fetch?: FetchImpl; protectedResource?: string; scopes?: string },
 ): Promise<OAuthEndpoints | null> {
 	const fetchImpl: FetchImpl = opts?.fetch ?? fetch;
 	const wellKnownPaths = [
@@ -273,6 +277,7 @@ export async function discoverOAuthEndpoints(
 	const visitedAuthServers = new Set<string>();
 
 	let protectedResource = opts?.protectedResource;
+	let resourceScopes = opts?.scopes;
 
 	// Step 1: If a resource_metadata URL was provided, fetch it to discover auth servers.
 	// This follows the RFC 9728 chain: resource_metadata → authorization_servers.
@@ -289,6 +294,10 @@ export async function discoverOAuthEndpoints(
 				if (typeof meta.resource === "string" && meta.resource.trim() !== "") {
 					protectedResource = meta.resource;
 				}
+				const metaScopes = Array.isArray(meta.scopes_supported)
+					? meta.scopes_supported.filter((s): s is string => typeof s === "string").join(" ")
+					: undefined;
+				if (metaScopes) resourceScopes = metaScopes;
 				const authServers = Array.isArray(meta.authorization_servers)
 					? meta.authorization_servers.filter((entry): entry is string => typeof entry === "string")
 					: [];
@@ -318,6 +327,8 @@ export async function discoverOAuthEndpoints(
 				? metadata.scopes_supported.filter((scope): scope is string => typeof scope === "string").join(" ")
 				: undefined;
 			const resource = typeof metadata.resource === "string" ? metadata.resource : protectedResource;
+			const registrationEndpoint =
+				typeof metadata.registration_endpoint === "string" ? metadata.registration_endpoint : undefined;
 
 			return {
 				authorizationUrl: String(metadata.authorization_endpoint),
@@ -340,6 +351,7 @@ export async function discoverOAuthEndpoints(
 							? metadata.scope
 							: undefined),
 				resource,
+				registrationEndpoint,
 			};
 		}
 
@@ -347,6 +359,12 @@ export async function discoverOAuthEndpoints(
 			const oauthData = (metadata.oauth || metadata.authorization || metadata.auth) as Record<string, unknown>;
 			if (typeof oauthData.authorization_url === "string" && typeof oauthData.token_url === "string") {
 				const resource = typeof oauthData.resource === "string" ? oauthData.resource : protectedResource;
+				const registrationEndpoint =
+					typeof oauthData.registration_endpoint === "string"
+						? oauthData.registration_endpoint
+						: typeof metadata.registration_endpoint === "string"
+							? metadata.registration_endpoint
+							: undefined;
 
 				return {
 					authorizationUrl: oauthData.authorization_url || String(oauthData.authorizationUrl),
@@ -368,6 +386,7 @@ export async function discoverOAuthEndpoints(
 								? oauthData.scope
 								: undefined,
 					resource,
+					registrationEndpoint,
 				};
 			}
 		}
@@ -379,6 +398,15 @@ export async function discoverOAuthEndpoints(
 		for (const path of wellKnownPaths) {
 			// Try each well-known path at both the absolute origin and relative
 			const urlsToTry = buildWellKnownUrls(path, baseUrl);
+			// Among the candidate documents for this single (baseUrl, path), prefer
+			// one that advertises dynamic client registration. Some providers (e.g.
+			// Atlassian) serve the authorization/token endpoints from the origin-root
+			// metadata but only expose registration_endpoint in the issuer-pathed
+			// document, so the first hit can lack DCR. Hold the first complete set as
+			// a fallback, keep probing the remaining variants, and return it once the
+			// candidates for this path are exhausted — preserving the original
+			// "stop at the first path that resolves" behavior.
+			let pathFallback: OAuthEndpoints | null = null;
 			for (const url of urlsToTry) {
 				try {
 					const response = await fetchImpl(url.toString(), {
@@ -390,7 +418,16 @@ export async function discoverOAuthEndpoints(
 					if (response.ok) {
 						const metadata = (await response.json()) as Record<string, unknown>;
 						const endpoints = findEndpoints(metadata);
-						if (endpoints) return endpoints;
+						if (endpoints) {
+							if (!endpoints.scopes && resourceScopes) {
+								endpoints.scopes = resourceScopes;
+							}
+							if (endpoints.registrationEndpoint) {
+								return endpoints;
+							}
+							pathFallback ??= endpoints;
+							continue;
+						}
 
 						if (path === "/.well-known/oauth-protected-resource") {
 							const authServers = Array.isArray(metadata.authorization_servers)
@@ -402,6 +439,13 @@ export async function discoverOAuthEndpoints(
 									? metadata.resource
 									: protectedResource;
 
+							const discoveredScopes = Array.isArray(metadata.scopes_supported)
+								? metadata.scopes_supported.filter((s): s is string => typeof s === "string").join(" ")
+								: undefined;
+							if (discoveredScopes) {
+								resourceScopes = discoveredScopes;
+							}
+
 							for (const discoveredAuthServer of authServers) {
 								if (visitedAuthServers.has(discoveredAuthServer)) {
 									continue;
@@ -409,14 +453,26 @@ export async function discoverOAuthEndpoints(
 								const discovered = await discoverOAuthEndpoints(serverUrl, discoveredAuthServer, undefined, {
 									fetch: fetchImpl,
 									protectedResource: discoveredProtectedResource,
+									scopes: resourceScopes,
 								});
-								if (discovered) return discovered;
+								if (discovered) {
+									if (!discovered.scopes && resourceScopes) {
+										discovered.scopes = resourceScopes;
+									}
+									if (discovered.registrationEndpoint) {
+										return discovered;
+									}
+									pathFallback ??= discovered;
+								}
 							}
 						}
 					}
 				} catch {
 					// Ignore errors, try next path
 				}
+			}
+			if (pathFallback) {
+				return pathFallback;
 			}
 		}
 	}

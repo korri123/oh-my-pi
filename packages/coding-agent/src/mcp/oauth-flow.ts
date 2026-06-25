@@ -197,6 +197,8 @@ export interface MCPOAuthConfig {
 	callbackPath?: string;
 	/** MCP resource URI for RFC 8707 resource indicators */
 	resource?: string;
+	/** Dynamic Client Registration endpoint discovered from the authorization server metadata. */
+	registrationEndpoint?: string;
 	/** Fetch implementation for token exchange and discovery requests. */
 	fetch?: FetchImpl;
 }
@@ -399,7 +401,7 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 	 * Try OAuth dynamic client registration when provider requires a client_id.
 	 */
 	async #tryRegisterClient(redirectUri: string): Promise<void> {
-		const registrationEndpoint = await this.#resolveRegistrationEndpoint();
+		const registrationEndpoint = this.config.registrationEndpoint ?? (await this.#resolveRegistrationEndpoint());
 		if (!registrationEndpoint) return;
 
 		try {
@@ -410,7 +412,7 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 					Accept: "application/json",
 				},
 				body: JSON.stringify({
-					client_name: "Codex",
+					client_name: "oh-my-pi",
 					redirect_uris: [redirectUri],
 					grant_types: ["authorization_code", "refresh_token"],
 					response_types: ["code"],

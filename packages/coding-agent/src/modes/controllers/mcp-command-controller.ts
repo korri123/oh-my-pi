@@ -509,6 +509,7 @@ export class MCPCommandController {
 									prompt: finalConfig.oauth?.prompt,
 									serverUrl: finalConfig.url,
 									resource: oauthResource,
+									registrationEndpoint: oauth.registrationEndpoint,
 								},
 							);
 							finalConfig = this.#persistOAuthResult(finalConfig, oauthResult, {
@@ -583,6 +584,7 @@ export class MCPCommandController {
 			prompt?: string;
 			serverUrl?: string;
 			resource?: string;
+			registrationEndpoint?: string;
 		},
 	): Promise<OAuthFlowResult> {
 		const authStorage = this.ctx.session.modelRegistry.authStorage;
@@ -624,6 +626,7 @@ export class MCPCommandController {
 					callbackPort: opts?.callbackPort,
 					callbackPath: opts?.callbackPath,
 					resource: opts?.resource,
+					registrationEndpoint: opts?.registrationEndpoint,
 				},
 				{
 					onAuth: (info: { url: string; instructions?: string }) => {
@@ -884,6 +887,7 @@ export class MCPCommandController {
 		clientId?: string;
 		scopes?: string;
 		resource?: string;
+		registrationEndpoint?: string;
 	}> {
 		// Stdio servers manage credentials inside the child process; OMP's OAuth
 		// flow only applies to http/sse transports. Without this guard the
@@ -1572,6 +1576,7 @@ export class MCPCommandController {
 					prompt: found.config.oauth?.prompt,
 					serverUrl,
 					resource: oauthResource,
+					registrationEndpoint: oauth.registrationEndpoint,
 				},
 			);
 

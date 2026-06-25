@@ -315,3 +315,82 @@ describe("relative Mcp-Auth-Server URL", () => {
 		);
 	});
 });
+
+describe("issuer-pathed dynamic client registration (Atlassian-style)", () => {
+	const TENANT = "VCeDsk8ZHncYF1g234fKtc4lNipbBhu3";
+	const serverUrl = "https://mcp.atlassian.com/v1/mcp/authv2";
+	const resourceMetadataUrl = "https://mcp.atlassian.com/.well-known/oauth-protected-resource/v1/mcp/authv2";
+	const issuer = `https://auth.atlassian.com/${TENANT}`;
+	const rootMeta = "https://auth.atlassian.com/.well-known/oauth-authorization-server";
+	const issuerMeta = `https://auth.atlassian.com/${TENANT}/.well-known/oauth-authorization-server`;
+	const registrationEndpoint = `https://auth.atlassian.com/${TENANT}/dcr/register`;
+
+	function atlassianFetch(calls: string[]) {
+		return mockFetch((input: FetchInput) => {
+			const url = String(input);
+			calls.push(url);
+
+			if (url === resourceMetadataUrl) {
+				return new Response(
+					JSON.stringify({
+						resource: serverUrl,
+						authorization_servers: [issuer],
+						scopes_supported: ["read:jira-work", "write:jira-work", "offline_access"],
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			// Origin-root AS metadata: authorization/token endpoints but NO registration_endpoint.
+			if (url === rootMeta) {
+				return new Response(
+					JSON.stringify({
+						issuer: "https://auth.atlassian.com",
+						authorization_endpoint: "https://auth.atlassian.com/authorize",
+						token_endpoint: "https://auth.atlassian.com/oauth/token",
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			// Issuer-pathed AS metadata: same endpoints PLUS the DCR registration endpoint.
+			if (url === issuerMeta) {
+				return new Response(
+					JSON.stringify({
+						issuer: "https://auth.atlassian.com",
+						authorization_endpoint: "https://auth.atlassian.com/authorize",
+						token_endpoint: "https://auth.atlassian.com/oauth/token",
+						registration_endpoint: registrationEndpoint,
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			return new Response("not found", { status: 404 });
+		});
+	}
+
+	it("returns the registration_endpoint from issuer-pathed metadata when the root document omits it", async () => {
+		const calls: string[] = [];
+		const oauth = await discoverOAuthEndpoints(serverUrl, undefined, resourceMetadataUrl, {
+			fetch: atlassianFetch(calls),
+		});
+
+		expect(oauth).toEqual({
+			authorizationUrl: "https://auth.atlassian.com/authorize",
+			tokenUrl: "https://auth.atlassian.com/oauth/token",
+			resource: serverUrl,
+			scopes: "read:jira-work write:jira-work offline_access",
+			registrationEndpoint,
+		});
+		// Probes the origin-root document first, then the issuer-pathed one that carries DCR.
+		expect(calls).toContain(rootMeta);
+		expect(calls).toContain(issuerMeta);
+	});
+
+	it("threads scopes_supported from protected-resource metadata into the requested scopes", async () => {
+		const calls: string[] = [];
+		const oauth = await discoverOAuthEndpoints(serverUrl, undefined, resourceMetadataUrl, {
+			fetch: atlassianFetch(calls),
+		});
+
+		expect(oauth?.scopes).toBe("read:jira-work write:jira-work offline_access");
+	});
+});

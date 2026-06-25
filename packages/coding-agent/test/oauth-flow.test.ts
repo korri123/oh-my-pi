@@ -46,7 +46,7 @@ function mockFigmaRegistration(onRegistration: (payload: Record<string, unknown>
 }
 
 describe("mcp oauth flow", () => {
-	it("uses Codex client name for dynamic client registration", async () => {
+	it("uses the oh-my-pi client name for dynamic client registration", async () => {
 		let registrationPayload: Record<string, unknown> | null = null;
 
 		const flow = new MCPOAuthFlow(
@@ -64,7 +64,7 @@ describe("mcp oauth flow", () => {
 		const authUrl = new URL(url);
 
 		expect(registrationPayload).not.toBeNull();
-		expect((registrationPayload as { client_name?: string } | null)?.client_name).toBe("Codex");
+		expect((registrationPayload as { client_name?: string } | null)?.client_name).toBe("oh-my-pi");
 		expect(authUrl.searchParams.get("client_id")).toBe("registered-client-id");
 		expect(authUrl.searchParams.get("state")).toBe("test-state");
 	});

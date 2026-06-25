@@ -63,6 +63,7 @@ export interface MCPAddWizardOAuthResult {
 interface MCPAddWizardOAuthOptions {
 	serverUrl?: string;
 	resource?: string;
+	registrationEndpoint?: string;
 }
 
 interface WizardState {
@@ -78,6 +79,7 @@ interface WizardState {
 	oauthClientSecret: string;
 	oauthScopes: string;
 	oauthResource: string;
+	oauthRegistrationEndpoint: string;
 	oauthCredentialId: string | null;
 	apiKey: string;
 	authLocation: AuthLocation | null;
@@ -109,6 +111,7 @@ export class MCPAddWizard extends Container {
 		oauthClientSecret: "",
 		oauthScopes: "",
 		oauthResource: "",
+		oauthRegistrationEndpoint: "",
 		oauthCredentialId: null,
 		apiKey: "",
 		authLocation: null,
@@ -998,6 +1001,7 @@ export class MCPAddWizard extends Container {
 					this.#state.oauthClientId = oauth.clientId || "";
 					this.#state.oauthScopes = oauth.scopes || "";
 					this.#state.oauthResource = oauth.resource || (this.#state.transport === "stdio" ? "" : this.#state.url);
+					this.#state.oauthRegistrationEndpoint = oauth.registrationEndpoint || "";
 					this.#state.authMethod = "oauth";
 
 					this.#contentContainer.clear();
@@ -1165,6 +1169,7 @@ export class MCPAddWizard extends Container {
 				{
 					serverUrl: this.#state.url || undefined,
 					resource: oauthResource || undefined,
+					registrationEndpoint: this.#state.oauthRegistrationEndpoint || undefined,
 				},
 			);
 
