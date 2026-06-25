@@ -37,6 +37,8 @@ const AGE_TICK_MS = 5_000;
 /** Double-tap window for the table's left-left "close hub" gesture. */
 const LEFT_TAP_WINDOW_MS = 500;
 
+const AGENT_HUB_CURSOR = ">";
+
 /** Compute the max content width for the current terminal, accounting for chrome. */
 function contentWidth(): number {
 	return Math.max(TRUNCATE_LENGTHS.SHORT, (process.stdout.columns || 80) - 6);
@@ -421,7 +423,7 @@ export class AgentHubOverlayComponent extends Container {
 	}
 
 	#renderRow(ref: AgentRef, selected: boolean, width: number): string {
-		const cursor = selected ? theme.fg("accent", theme.nav.cursor) : " ";
+		const cursor = selected ? theme.fg("accent", AGENT_HUB_CURSOR) : " ";
 		const parts: string[] = [statusBadge(ref.status), theme.bold(replaceTabs(ref.id))];
 		parts.push(theme.fg("dim", replaceTabs(ref.displayName)));
 		parts.push(theme.fg("dim", ref.parentId ? `${ref.kind} · of ${ref.parentId}` : ref.kind));
