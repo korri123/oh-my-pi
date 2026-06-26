@@ -312,11 +312,17 @@ export async function discoverOAuthEndpoints(
 		"/.mcp/auth",
 		"/authorize", // Some MCP servers expose OAuth config here
 	];
-	const urlsToQuery: string[] = [];
+	const urlsToQuery: Array<{ url: string; issuerCandidate: boolean }> = [];
 	const visitedAuthServers = new Set<string>();
 
 	let protectedResource = opts?.protectedResource;
 	let resourceScopes = opts?.scopes;
+
+	const addDiscoveryBase = (url: string | undefined, issuerCandidate: boolean): void => {
+		if (!url || visitedAuthServers.has(url)) return;
+		urlsToQuery.push({ url, issuerCandidate });
+		visitedAuthServers.add(url);
+	};
 
 	// Step 1: If a resource_metadata URL was provided, fetch it to discover auth servers.
 	// This follows the RFC 9728 chain: resource_metadata → authorization_servers.
@@ -341,10 +347,7 @@ export async function discoverOAuthEndpoints(
 					? meta.authorization_servers.filter((entry): entry is string => typeof entry === "string")
 					: [];
 				for (const s of authServers) {
-					if (!visitedAuthServers.has(s)) {
-						urlsToQuery.push(s);
-						visitedAuthServers.add(s);
-					}
+					addDiscoveryBase(s, true);
 				}
 			}
 		} catch {
@@ -352,13 +355,9 @@ export async function discoverOAuthEndpoints(
 		}
 	}
 
-	// Step 2: Add explicit authServerUrl and serverUrl (deduped against visited)
-	for (const url of [authServerUrl, serverUrl].filter((v): v is string => Boolean(v))) {
-		if (!visitedAuthServers.has(url)) {
-			urlsToQuery.push(url);
-			visitedAuthServers.add(url);
-		}
-	}
+	// Step 2: Add explicit authServerUrl as an issuer candidate, then the resource server fallback.
+	addDiscoveryBase(authServerUrl, true);
+	addDiscoveryBase(serverUrl, false);
 
 	const findEndpoints = (metadata: Record<string, unknown>): OAuthEndpoints | null => {
 		if (metadata.authorization_endpoint && metadata.token_endpoint) {
@@ -433,11 +432,11 @@ export async function discoverOAuthEndpoints(
 		return null;
 	};
 
-	for (const baseUrl of urlsToQuery) {
+	for (const base of urlsToQuery) {
 		for (const path of wellKnownPaths) {
 			// Try each well-known path at both the absolute origin and relative
-			const urlsToTry = buildWellKnownUrls(path, baseUrl);
-			// Among the candidate documents for this single (baseUrl, path), prefer
+			const urlsToTry = buildWellKnownUrls(path, base.url);
+			// Among the candidate documents for this single (base URL, path), prefer
 			// one that advertises dynamic client registration. Some providers (e.g.
 			// Atlassian) serve the authorization/token endpoints from the origin-root
 			// metadata but only expose registration_endpoint in the issuer-pathed
@@ -457,13 +456,15 @@ export async function discoverOAuthEndpoints(
 					if (response.ok) {
 						const metadata = (await response.json()) as Record<string, unknown>;
 						// Authorization-server / OpenID Connect metadata documents carry an
-						// `issuer` field that MUST equal the queried base URL (RFC 8414 §3.3,
-						// OIDC Discovery §4.3). Protected-resource and nonstandard paths use a
-						// different schema, so the issuer check only gates the two official
-						// auth-server documents.
+						// `issuer` field that MUST equal the queried base URL only when that
+						// URL came from an auth-server source (RFC 8414 §3.3, OIDC Discovery
+						// §4.3). Resource-server fallback probes can legitimately return
+						// cross-host issuer metadata.
 						const requireIssuerMatch =
-							path === "/.well-known/oauth-authorization-server" || path === "/.well-known/openid-configuration";
-						const issuerOk = requireIssuerMatch ? issuerMatchesBase(metadata.issuer, baseUrl) : true;
+							base.issuerCandidate &&
+							(path === "/.well-known/oauth-authorization-server" ||
+								path === "/.well-known/openid-configuration");
+						const issuerOk = requireIssuerMatch ? issuerMatchesBase(metadata.issuer, base.url) : true;
 						const endpoints = issuerOk ? findEndpoints(metadata) : null;
 						if (endpoints) {
 							if (!endpoints.scopes && resourceScopes) {
