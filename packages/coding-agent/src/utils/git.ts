@@ -90,6 +90,8 @@ export interface PushOptions {
 export interface PatchOptions {
 	readonly cached?: boolean;
 	readonly check?: boolean;
+	/** Fall back to a 3-way merge when the patch does not apply cleanly (`git apply --3way`). Implies `--index`; conflicts are left as markers + unmerged index entries. */
+	readonly threeWay?: boolean;
 	readonly env?: Record<string, string | undefined>;
 	readonly signal?: AbortSignal;
 }
@@ -359,6 +361,7 @@ function buildApplyArgs(patchPath: string, options: PatchOptions): string[] {
 	const args = ["apply"];
 	if (options.check) args.push("--check");
 	if (options.cached) args.push("--cached");
+	if (options.threeWay) args.push("--3way");
 	args.push("--binary", patchPath);
 	return args;
 }
@@ -1613,6 +1616,12 @@ export const ls = {
 	/** List untracked files (excludes ignored). */
 	async untracked(cwd: string, signal?: AbortSignal): Promise<string[]> {
 		return ls.files(cwd, { others: true, excludeStandard: true, signal });
+	},
+
+	/** List paths with unmerged (conflicted) index entries, e.g. after `git apply --3way` left a conflict. */
+	async unmerged(cwd: string, signal?: AbortSignal): Promise<string[]> {
+		const out = await runText(cwd, ["diff", "--name-only", "--diff-filter=U"], { readOnly: true, signal });
+		return splitLines(out);
 	},
 
 	/** List submodule paths (recursive). */

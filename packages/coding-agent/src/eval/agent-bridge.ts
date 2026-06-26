@@ -4,14 +4,8 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { prompt, Snowflake } from "@oh-my-pi/pi-utils";
+import { Snowflake } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
-import { resolveAgentModelPatterns } from "../config/model-resolver";
-import type { LocalProtocolOptions } from "../internal-urls";
-import { MCPManager } from "../mcp/manager";
-import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.md" with { type: "text" };
-import { MAIN_AGENT_ID } from "../registry/agent-registry";
-import * as taskDiscovery from "../task/discovery";
 import type { ExecutorOptions } from "../task/executor";
 import * as taskExecutor from "../task/executor";
 import {
@@ -29,6 +23,7 @@ import type { ToolSession } from "../tools";
 import { ToolError } from "../tools/tool-errors";
 import { withBridgeTimeoutPause } from "./bridge-timeout";
 import type { JsStatusEvent } from "./js/shared/types";
+import { buildEvalSubagentRunOptions, renderSubagentPrompt, resolveEvalSubagentContext } from "./subagent-runner";
 // Import review tools for side effects (registers subagent tool handlers).
 import "../tools/review";
 
@@ -174,10 +169,6 @@ function assertNotPlanMode(session: ToolSession): void {
 	}
 }
 
-function renderSubagentPrompt(assignment: string): string {
-	return prompt.render(subagentUserPromptTemplate, { assignment: assignment.trim() });
-}
-
 function trimToUndefined(value: string | undefined): string | undefined {
 	const trimmed = value?.trim();
 	return trimmed ? trimmed : undefined;
@@ -300,40 +291,10 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 		);
 	}
 
-	const { agents } = await taskDiscovery.discoverAgents(options.session.cwd);
-	const agent = taskDiscovery.getAgent(agents, agentName);
-	if (!agent) {
-		const available = agents.map(candidate => candidate.name).join(", ") || "none";
-		throw new ToolError(`Unknown agent "${agentName}". Available: ${available}`);
-	}
-	assertAgentEnabled(options.session, agentName, agents);
-
-	const effectiveAgent = agent;
-	const parentActiveModelPattern = options.session.getActiveModelString?.();
-	const agentModelOverrides = options.session.settings.get("task.agentModelOverrides");
-	const modelOverride = resolveAgentModelPatterns({
-		settingsOverride: parsed.model ?? agentModelOverrides[agentName],
-		agentModel: effectiveAgent.model,
-		settings: options.session.settings,
-		activeModelPattern: parentActiveModelPattern,
-		fallbackModelPattern: options.session.getModelString?.(),
-	});
-	const availableSkills = [...(options.session.skills ?? [])];
-	const resolvedAutoloadSkills =
-		effectiveAgent.autoloadSkills?.length && availableSkills.length > 0
-			? effectiveAgent.autoloadSkills
-					.map(name => availableSkills.find(skill => skill.name === name))
-					.filter((skill): skill is NonNullable<typeof skill> => skill !== undefined)
-			: [];
-	const contextFiles = options.session.contextFiles?.filter(
-		file => path.basename(file.path).toLowerCase() !== "agents.md",
-	);
-	const localProtocolOptions: LocalProtocolOptions = options.session.localProtocolOptions ?? {
-		getArtifactsDir: options.session.getArtifactsDir ?? (() => null),
-		getSessionId: options.session.getSessionId ?? (() => null),
-	};
-	const parentArtifactManager = options.session.getArtifactManager?.() ?? undefined;
-	const mcpManager = options.session.mcpManager ?? MCPManager.instance();
+	const ctx = await resolveEvalSubagentContext(options.session, agentName, parsed.model);
+	assertAgentEnabled(options.session, agentName, ctx.agents);
+	const effectiveAgent = ctx.agent;
+	const modelOverride = ctx.modelOverride;
 	const { sessionFile, artifactsDir, tempArtifactsDir } = await getArtifacts(options.session);
 	const outputManager = getOutputManager(options.session);
 	const id = await outputManager.allocate(outputIdBase(parsed.label, agentName));
@@ -361,62 +322,17 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 
 	const buildCommitMessage = makeIsolationCommitMessage(options.session);
 
-	const baseRunOptions: ExecutorOptions = {
-		cwd: options.session.cwd,
-		agent: effectiveAgent,
-		task: renderSubagentPrompt(assignment),
+	const baseRunOptions: ExecutorOptions = buildEvalSubagentRunOptions(options.session, ctx, {
+		id,
 		assignment,
 		description: trimToUndefined(parsed.label),
-		index: 0,
-		id,
-		taskDepth: options.session.taskDepth ?? 0,
-		modelOverride,
-		parentActiveModelPattern,
-		thinkingLevel: effectiveAgent.thinkingLevel,
 		outputSchema: structured ? parsed.schema : undefined,
 		sessionFile,
-		persistArtifacts: Boolean(sessionFile),
 		artifactsDir,
-		// Eval `agent()` subagents are short-lived programmatic helpers (data
-		// collection, structured output, parallel() fan-out). LSP server
-		// cold-start costs tens of seconds and is pure overhead here, so it is
-		// forced off regardless of the `task.enableLsp` setting — that knob only
-		// governs LSP-aware delegation through the `task` tool.
-		enableLsp: false,
-		signal: options.signal,
-		eventBus: options.session.eventBus,
-		onProgress: progress => emitProgressStatus(options.emitStatus, progress),
-		authStorage: options.session.authStorage,
-		modelRegistry: options.session.modelRegistry,
-		settings: options.session.settings,
-		// Eval `agent()` subagents are never wall-clock capped: the parent
-		// cell's idle watchdog is suspended for the whole bridge call
-		// (withBridgeTimeoutPause), so a long-running phase/recovery workflow
-		// must not be killed by `task.maxRuntimeMs`. Force the limit off
-		// regardless of the inherited session setting.
-		maxRuntimeMs: 0,
-		keepAlive: false,
 		forceAdvisor: parsed.advisor === true,
-		mcpManager,
-		contextFiles,
-		skills: availableSkills,
-		autoloadSkills: resolvedAutoloadSkills,
-		workspaceTree: options.session.workspaceTree,
-		promptTemplates: options.session.promptTemplates,
-		localProtocolOptions,
-		parentArtifactManager,
-		parentHindsightSessionState: options.session.getHindsightSessionState?.(),
-		parentMnemopiSessionState: options.session.getMnemopiSessionState?.(),
-		parentTelemetry: options.session.getTelemetry?.(),
-		parentAgentId: options.session.getAgentId?.() ?? MAIN_AGENT_ID,
-		// Live source of truth for `serviceTierSubagent: inherit` (null = explicit none).
-		parentServiceTier: options.session.getServiceTier ? (options.session.getServiceTier() ?? null) : undefined,
-		// Deliberately omit parentEvalSessionId: the parent's Python kernel is
-		// blocked on this bridge call, so sharing the eval session would deadlock
-		// (subagent queues behind the parent's in-flight execution, parent waits
-		// for subagent → circular). Each bridge-spawned subagent gets its own
-		// eval session with an independent kernel.
-	};
+		signal: options.signal,
+		onProgress: progress => emitProgressStatus(options.emitStatus, progress),
+	});
 
 	// Suspend eval timeout accounting through the WHOLE bridge call: the
 	// subagent subprocess plus any isolation post-processing (merge,

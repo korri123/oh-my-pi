@@ -124,6 +124,13 @@ if (!globalThis.__omp_js_prelude_loaded__) {
 		return node;
 	};
 
+	const integrate = async (nodes, opts, ...rest) => {
+		const o = optionsArg("integrate", opts, rest, ["order", "onConflict", "resolver"], "{ order, onConflict, resolver }");
+		const list = Array.isArray(nodes) ? nodes : [nodes];
+		const res = await globalThis.__omp_call_tool__("__integrate__", { nodes: list, ...o });
+		return res && typeof res === "object" ? res.details : res;
+	};
+
 	// Pool ceiling mirrors the task tool's `task.maxConcurrency` setting so an
 	// eval fan-out runs as wide as a `task` batch would. 0 (and any non-finite
 	// reply) means unbounded — run every item at once.
@@ -281,6 +288,7 @@ if (!globalThis.__omp_js_prelude_loaded__) {
 	globalThis.completion = completion;
 	globalThis.output = output;
 	globalThis.agent = agent;
+	globalThis.integrate = integrate;
 	globalThis.parallel = parallel;
 	globalThis.pipeline = pipeline;
 	globalThis.log = log;

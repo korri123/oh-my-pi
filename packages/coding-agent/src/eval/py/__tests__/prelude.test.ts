@@ -29,4 +29,25 @@ describe("python prelude", () => {
 		expect(PYTHON_PRELUDE).toContain('("changesApplied", "changes_applied")');
 		expect(PYTHON_PRELUDE).toContain('("isolationSummary", "isolation_summary")');
 	});
+
+	it("forwards integrate() options under the camelCase keys the bridge parses", () => {
+		// The __integrate__ bridge validates `onConflict` (camelCase). A
+		// snake_case key would be silently dropped, so the helper must translate
+		// the Python `on_conflict` kwarg to `onConflict`.
+		expect(PYTHON_PRELUDE).toContain('args["onConflict"] = on_conflict');
+	});
+
+	it("wraps a single node dict instead of corrupting it via list()", () => {
+		// `list(a_dict)` yields the dict's keys — silently dropping the node's
+		// data. integrate(single_node) must wrap, mirroring the JS helper.
+		expect(PYTHON_PRELUDE).toContain("[nodes] if isinstance(nodes, dict) else list(nodes)");
+	});
+
+	it("snake_cases the integrate() report (including nested resolver_id/patch_path keys)", () => {
+		// The report's nested resolved/failed items carry camelCase keys
+		// (resolverId, patchPath); a top-level-only rename would leave them
+		// camelCase, so the helper must convert recursively.
+		expect(PYTHON_PRELUDE).toContain("def _snakeify(value)");
+		expect(PYTHON_PRELUDE).toContain("def _camel_to_snake(name)");
+	});
 });

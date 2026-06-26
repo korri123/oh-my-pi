@@ -590,6 +590,45 @@ function agent(prompt::String; agent="task", model=nothing, label=nothing, schem
     return node
 end
 
+function __omp_snakeify(value)
+    if value isa AbstractDict
+        out = Dict{String, Any}()
+        for (k, v) in value
+            key = k isa AbstractString ? lowercase(replace(k, r"([A-Z])" => s"_\1")) : k
+            out[key] = __omp_snakeify(v)
+        end
+        return out
+    elseif value isa AbstractVector
+        return [__omp_snakeify(v) for v in value]
+    else
+        return value
+    end
+end
+
+"""
+    integrate(nodes; order, on_conflict, resolver)
+
+Merge a fan-out of isolated `agent()` patches into the working tree. Pass the
+handle nodes from `agent(isolated=true, apply=false, handle=true)`. `order`
+("auto"/"given"), `on_conflict` ("resolve"/"abort"), and `resolver` control
+ordering and conflict handling. Returns a report dict with snake_case keys.
+"""
+function integrate(nodes; order=nothing, on_conflict=nothing, resolver=nothing, kwargs...)
+    args_dict = Dict{String, Any}("nodes" => (nodes isa AbstractDict ? [nodes] : collect(nodes)))
+    if order !== nothing
+        args_dict["order"] = order
+    end
+    if on_conflict !== nothing
+        args_dict["onConflict"] = on_conflict
+    end
+    if resolver !== nothing
+        args_dict["resolver"] = resolver
+    end
+    res = __omp_call_bridge("__integrate__", args_dict)
+    details = res isa AbstractDict ? get(res, "details", nothing) : nothing
+    return __omp_snakeify(details === nothing ? Dict{String, Any}() : details)
+end
+
 function Base.log(message::AbstractString)
     Main.emit_frame(Dict(
         "type" => "display",

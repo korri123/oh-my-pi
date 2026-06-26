@@ -105,3 +105,35 @@ describe("eval js agent() handle", () => {
 		expect("branchName" in node).toBe(false);
 	});
 });
+
+type IntegrateHelper = (nodes: unknown, opts?: Record<string, unknown>) => Promise<unknown>;
+
+describe("eval js integrate()", () => {
+	it("forwards nodes + options to the __integrate__ bridge and returns the report details", async () => {
+		let seenName: string | undefined;
+		let seenArgs: Record<string, unknown> | undefined;
+		const report = { ok: true, applied: ["a"], resolved: [], failed: [], skipped: [], appliedToWorktree: true };
+		const sandbox = loadPrelude(async (name, args) => {
+			seenName = name;
+			seenArgs = args as Record<string, unknown>;
+			return { text: "summary", details: report };
+		});
+		const nodes = [{ id: "a", patchPath: "/p/a.patch" }];
+		const out = await (sandbox.integrate as IntegrateHelper)(nodes, { order: "given", onConflict: "abort" });
+		expect(seenName).toBe("__integrate__");
+		expect(seenArgs?.nodes).toEqual(nodes);
+		expect(seenArgs?.order).toBe("given");
+		expect(seenArgs?.onConflict).toBe("abort");
+		expect(out).toEqual(report);
+	});
+
+	it("wraps a single node dict in a list", async () => {
+		let seenArgs: Record<string, unknown> | undefined;
+		const sandbox = loadPrelude(async (_name, args) => {
+			seenArgs = args as Record<string, unknown>;
+			return { text: "", details: {} };
+		});
+		await (sandbox.integrate as IntegrateHelper)({ id: "solo", patchPath: "/p.patch" });
+		expect(seenArgs?.nodes).toEqual([{ id: "solo", patchPath: "/p.patch" }]);
+	});
+});

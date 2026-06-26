@@ -43,6 +43,8 @@ completion(prompt, model?="default", system?=None, schema?=None) → str | dict
     Run a subagent → final output. `agent` picks another discovered agent; `schema` as in completion(). Background via `local://` files named in the prompt. `handle` → DAG node dict { text, output, handle: "agent://<id>", id, agent } (parsed under `data` when `schema` set). `advisor=True` force-attaches an advisor to the spawn (overrides advisor.enabled/subagents settings; no-op without an advisor-role model; doubles per-turn model spend — costly across wide fan-outs).
 {{#if js}}    JS: options are ONE trailing object — agent(prompt, { agent, schema, handle, advisor }).
 {{/if}}
+integrate(nodes, order?="auto", on_conflict?="resolve", resolver?="task") → dict
+    Merge a fan-out of isolated agent() patches into the working tree as ONE unit. Pass the handle nodes from agent(isolated=True, apply=False, handle=True). Applies in order ("auto" smallest-first | "given"); a 3-way conflict dispatches a resolver subagent ("resolve") or stops ("abort"). Atomic — the real tree changes only if every patch integrates cleanly, else it's left untouched. Returns { ok, applied, resolved, failed, skipped, combined_patch_path, applied_to_worktree }.
 {{/if}}
 parallel(thunks) → list
     Thunks through a bounded pool (wide as a `task` batch — don't pre-shrink), input order kept; returns when all finish, a throwing thunk propagates.

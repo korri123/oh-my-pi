@@ -435,6 +435,36 @@ unless defined?($__omp_prelude_loaded) && $__omp_prelude_loaded
     node
   end
 
+  def __omp_snakeify(value)
+    case value
+    when Hash
+      value.each_with_object({}) do |(k, v), acc|
+        key = k.is_a?(String) ? k.gsub(/([A-Z])/) { "_#{Regexp.last_match(1).downcase}" } : k
+        acc[key] = __omp_snakeify(v)
+      end
+    when Array
+      value.map { |v| __omp_snakeify(v) }
+    else
+      value
+    end
+  end
+
+  # Merge a fan-out of isolated agent() patches into the working tree. Pass the
+  # handle nodes from agent(isolated: true, apply: false, handle: true).
+  # `order` ("auto"/"given"), `on_conflict` ("resolve"/"abort"), and `resolver`
+  # control ordering and conflict handling. Returns a report hash with
+  # snake_case keys (ok, applied, resolved, failed, skipped,
+  # combined_patch_path, applied_to_worktree, nested_warnings).
+  def integrate(nodes, order: nil, on_conflict: nil, resolver: nil)
+    args = { "nodes" => nodes.is_a?(Hash) ? [nodes] : nodes.to_a }
+    args["order"] = order unless order.nil?
+    args["onConflict"] = on_conflict unless on_conflict.nil?
+    args["resolver"] = resolver unless resolver.nil?
+    res = OmpBridge.call("__integrate__", args)
+    details = res.is_a?(Hash) ? res["details"] : nil
+    __omp_snakeify(details.nil? ? {} : details)
+  end
+
   # -------------------------------------------------------------------------
   # Concurrency: parallel / pipeline over a bounded pool (task.maxConcurrency).
   # -------------------------------------------------------------------------

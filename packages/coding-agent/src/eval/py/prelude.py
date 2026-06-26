@@ -517,6 +517,52 @@ if "__omp_prelude_loaded__" not in globals():
                 node[dst_key] = details[src_key]
         return node
 
+    def _camel_to_snake(name):
+        out = []
+        for ch in name:
+            if ch.isupper():
+                out.append("_")
+                out.append(ch.lower())
+            else:
+                out.append(ch)
+        return "".join(out)
+
+    def _snakeify(value):
+        if isinstance(value, dict):
+            return {(_camel_to_snake(k) if isinstance(k, str) else k): _snakeify(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_snakeify(v) for v in value]
+        return value
+
+    def integrate(nodes, *, order=None, on_conflict=None, resolver=None):
+        """Merge a fan-out of isolated ``agent()`` patches into the working tree.
+
+        Pass the handle nodes returned by
+        ``agent(isolated=True, apply=False, handle=True)``. Patches apply in
+        order (``order="auto"`` smallest first — the default — or ``"given"``).
+        A 3-way conflict dispatches a resolver subagent
+        (``on_conflict="resolve"``, the default; ``resolver`` picks the agent
+        type) or stops the run (``on_conflict="abort"``). Integration happens in
+        a throwaway worktree, so the combined delta only touches the real tree
+        once every patch is integrated cleanly — a failure leaves it untouched.
+
+        Returns a report dict: ``{"ok", "applied", "resolved", "failed",
+        "skipped", "combined_patch_path", "applied_to_worktree",
+        "nested_warnings"}``. ``resolved`` items are
+        ``{"id", "files", "resolver_id"}`` and ``failed`` items are
+        ``{"id", "reason", "patch_path"}``.
+        """
+        args = {"nodes": [nodes] if isinstance(nodes, dict) else list(nodes)}
+        if order is not None:
+            args["order"] = order
+        if on_conflict is not None:
+            args["onConflict"] = on_conflict
+        if resolver is not None:
+            args["resolver"] = resolver
+        res = _bridge_call("__integrate__", args)
+        details = res.get("details") if isinstance(res, dict) else None
+        return _snakeify(details if details is not None else {})
+
     def _concurrency_limit():
         """Worker-pool ceiling from the host ``task.maxConcurrency`` setting.
 
