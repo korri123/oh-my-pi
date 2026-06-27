@@ -753,6 +753,7 @@ import * as bundledPiCodingAgentTaskNameGenerator from "@oh-my-pi/pi-coding-agen
 import * as bundledPiCodingAgentTaskOmpCommand from "@oh-my-pi/pi-coding-agent/task/omp-command";
 import * as bundledPiCodingAgentTaskOutputManager from "@oh-my-pi/pi-coding-agent/task/output-manager";
 import * as bundledPiCodingAgentTaskParallel from "@oh-my-pi/pi-coding-agent/task/parallel";
+import * as bundledPiCodingAgentTaskPatchIntegrator from "@oh-my-pi/pi-coding-agent/task/patch-integrator";
 import * as bundledPiCodingAgentTaskPersistedRevive from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
 import * as bundledPiCodingAgentTaskRender from "@oh-my-pi/pi-coding-agent/task/render";
 import * as bundledPiCodingAgentTaskRepairArgs from "@oh-my-pi/pi-coding-agent/task/repair-args";
@@ -2749,6 +2750,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/task/parallel": bundledPiCodingAgentTaskParallel as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/task/patch-integrator": bundledPiCodingAgentTaskPatchIntegrator as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/task/persisted-revive": bundledPiCodingAgentTaskPersistedRevive as unknown as Readonly<
