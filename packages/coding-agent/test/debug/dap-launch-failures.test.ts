@@ -14,6 +14,7 @@ import type {
 } from "@oh-my-pi/pi-coding-agent/dap/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { DebugTool } from "@oh-my-pi/pi-coding-agent/tools/debug";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const TEST_ADAPTER: DapResolvedAdapter = {
 	name: "lldb-dap",
@@ -141,6 +142,7 @@ class FakeDapClient {
 	readonly #exited = Promise.withResolvers<void>();
 	readonly #handlers = new Map<string, Set<DapEventHandler>>();
 	#alive = true;
+	requests: Array<{ command: string; args: unknown }> = [];
 
 	constructor(
 		readonly adapter: DapResolvedAdapter,
@@ -152,6 +154,7 @@ class FakeDapClient {
 			attachErrorDelayMs?: number;
 			configurationDoneError?: string;
 			rejectStopWaiters?: boolean;
+			stopAfterLaunch?: boolean;
 		},
 	) {
 		this.proc = {
@@ -174,7 +177,8 @@ class FakeDapClient {
 		return { supportsConfigurationDoneRequest: true };
 	}
 
-	async sendRequest(command: string): Promise<unknown> {
+	async sendRequest(command: string, args?: unknown): Promise<unknown> {
+		this.requests.push({ command, args });
 		if (command === "launch" && this.options.launchError) {
 			if (this.options.launchErrorDelayMs) await Bun.sleep(this.options.launchErrorDelayMs);
 			throw new Error(this.options.launchError);
@@ -185,6 +189,9 @@ class FakeDapClient {
 		}
 		if (command === "configurationDone" && this.options.configurationDoneError) {
 			throw new Error(this.options.configurationDoneError);
+		}
+		if (command === "launch" && this.options.stopAfterLaunch) {
+			queueMicrotask(() => this.#emit("stopped", { reason: "entry", threadId: 1 }));
 		}
 		return {};
 	}
@@ -237,6 +244,21 @@ afterEach(() => {
 });
 
 describe("DAP launch failure handling", () => {
+	it("preserves adapter launchDefaults args when launch omits args", async () => {
+		const adapter: DapResolvedAdapter = {
+			...TEST_ADAPTER,
+			launchDefaults: { request: "launch", args: ["--configured"], stopOnEntry: true },
+		};
+		const manager = new DapSessionManager();
+		const fake = new FakeDapClient(adapter, process.cwd(), { stopAfterLaunch: true });
+		spyOn(DapClient, "spawn").mockResolvedValue(fake as unknown as DapClient);
+
+		await manager.launch({ adapter, program: "/bin/echo", cwd: process.cwd() }, undefined, 10);
+
+		const launch = fake.requests.find(request => request.command === "launch");
+		expect(launch?.args).toMatchObject({ args: ["--configured"], program: "/bin/echo" });
+	});
+
 	it("surfaces the launch failure when configurationDone also fails", async () => {
 		const manager = new DapSessionManager();
 		const fake = new FakeDapClient(TEST_ADAPTER, process.cwd(), {
@@ -418,7 +440,7 @@ describe("DAP launch failure handling", () => {
 			expect(client.isAlive()).toBe(true);
 		} finally {
 			await client?.dispose();
-			await fs.rm(cwd, { recursive: true, force: true });
+			await removeWithRetries(cwd);
 		}
 	});
 
@@ -518,7 +540,7 @@ describe("DebugTool launch validation", () => {
 					/launch program resolves to a directory.*python/,
 				);
 			} finally {
-				await fs.rm(cwd, { recursive: true, force: true });
+				await removeWithRetries(cwd);
 			}
 		} finally {
 			launchSpy.mockRestore();
@@ -561,7 +583,7 @@ describe("DebugTool launch validation", () => {
 				expect(opts.extraLaunchArguments).toEqual({ mode: "debug" });
 				expect(opts.program).toBe(path.join(cwd, "cmd"));
 			} finally {
-				await fs.rm(cwd, { recursive: true, force: true });
+				await removeWithRetries(cwd);
 			}
 		} finally {
 			sessionLaunchSpy.mockRestore();
@@ -598,7 +620,7 @@ describe("DebugTool launch validation", () => {
 				expect(opts.adapter.name).toBe("dlv");
 				expect(opts.extraLaunchArguments).toEqual({ mode: "debug" });
 			} finally {
-				await fs.rm(cwd, { recursive: true, force: true });
+				await removeWithRetries(cwd);
 			}
 		} finally {
 			sessionLaunchSpy.mockRestore();
@@ -637,7 +659,7 @@ describe("DebugTool launch validation", () => {
 				const [opts] = sessionLaunchSpy.mock.calls[0]!;
 				expect(opts.extraLaunchArguments).toEqual({ mode: "exec" });
 			} finally {
-				await fs.rm(cwd, { recursive: true, force: true });
+				await removeWithRetries(cwd);
 			}
 		} finally {
 			sessionLaunchSpy.mockRestore();
@@ -664,7 +686,7 @@ describe("DebugTool launch validation", () => {
 					tool.execute("call", { action: "launch", program: "main.py", adapter: "debugpy" }),
 				).rejects.toThrow(/debugpy.*python not found in PATH/);
 			} finally {
-				await fs.rm(cwd, { recursive: true, force: true });
+				await removeWithRetries(cwd);
 			}
 		} finally {
 			launchSpy.mockRestore();
@@ -689,7 +711,7 @@ describe("DebugTool launch validation", () => {
 					/debugpy.*python not found in PATH/,
 				);
 			} finally {
-				await fs.rm(cwd, { recursive: true, force: true });
+				await removeWithRetries(cwd);
 			}
 		} finally {
 			attachSpy.mockRestore();
@@ -759,7 +781,7 @@ describe("DebugTool launch validation", () => {
 					/No debugger adapter available/,
 				);
 			} finally {
-				await fs.rm(cwd, { recursive: true, force: true });
+				await removeWithRetries(cwd);
 			}
 		} finally {
 			launchSpy.mockRestore();

@@ -347,7 +347,7 @@ export class DapSessionManager {
 				...(options.extraLaunchArguments ?? {}),
 				program: options.program,
 				cwd: options.cwd,
-				args: options.args,
+				...(options.args !== undefined ? { args: options.args } : {}),
 			};
 			// Subscribe to stop events BEFORE launching so we don't miss
 			// stopOnEntry events that arrive before we start listening.

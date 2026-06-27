@@ -29,6 +29,7 @@ import type { StopDetails } from "./providers/anthropic-wire";
 import type { AzureOpenAIResponsesOptions } from "./providers/azure-openai-responses";
 import type { CursorOptions } from "./providers/cursor";
 import type { DevinOptions } from "./providers/devin";
+import type { GitLabDuoWorkflowOptions } from "./providers/gitlab-duo-workflow";
 import type { GoogleOptions } from "./providers/google";
 import type { GoogleGeminiCliOptions } from "./providers/google-gemini-cli";
 import type { GoogleVertexOptions } from "./providers/google-vertex";
@@ -67,6 +68,7 @@ export interface ApiOptionsMap {
 	"google-vertex": GoogleVertexOptions;
 	"ollama-chat": OllamaChatOptions;
 	"cursor-agent": CursorOptions;
+	"gitlab-duo-agent": GitLabDuoWorkflowOptions;
 	"devin-agent": DevinOptions;
 }
 // Compile-time exhaustiveness check - this will fail if ApiOptionsMap doesn't have all KnownApi keys
@@ -275,6 +277,14 @@ export interface StreamOptions {
 	 */
 	providerSessionState?: Map<string, ProviderSessionState>;
 	/**
+	 * Optional per-provider concurrent request cap for LLM stream calls. Keys are
+	 * provider ids (`model.provider`); positive numeric values cap in-flight
+	 * requests across local OMP processes that share the same config root. Omitted
+	 * providers are unlimited. Non-chat provider APIs that bypass stream helpers
+	 * are not covered.
+	 */
+	maxInFlightRequests?: Record<string, number>;
+	/**
 	 * Optional callback for inspecting or replacing provider payloads before sending.
 	 * Return undefined to keep the payload unchanged.
 	 */
@@ -334,6 +344,9 @@ export interface StreamOptions {
 	 * channel) silently ignore the override.
 	 */
 	fetch?: FetchImpl;
+	/** Current session working directory for providers that need workspace-scoped discovery. */
+	cwd?: string;
+
 	/** Cursor exec/MCP tool handlers (cursor-agent only). */
 	execHandlers?: CursorExecHandlers;
 }
@@ -524,6 +537,8 @@ export interface AssistantMessage {
 	errorMessage?: string;
 	/** HTTP status surfaced by the provider when the request failed. Populated by every provider's catch block alongside `errorMessage` so consumers (auth retry, telemetry, UI) can branch without regex-scraping the message. */
 	errorStatus?: number;
+	/** Structured machine-readable error classifier; see `utils/error-id.ts` for bit layout and helpers. */
+	errorId?: number;
 	/**
 	 * Stable identifiers for request features the provider silently dropped
 	 * during this turn (e.g. `"priority"`). Set when a server-side rejection

@@ -3,7 +3,9 @@ import { isKimiModelId } from "@oh-my-pi/pi-catalog/identity";
 import { resolveWireModelId } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import type { ResolvedOpenAICompat } from "@oh-my-pi/pi-catalog/types";
-import { $env, extractHttpStatusFromError } from "@oh-my-pi/pi-utils";
+import { $env, parseStreamingJson, parseStreamingJsonThrottled } from "@oh-my-pi/pi-utils";
+import { renderDemotedThinking } from "../dialect/demotion";
+import * as AIError from "../error";
 import { getKimiCommonHeaders } from "../registry/oauth/kimi";
 import { getEnvApiKey } from "../stream";
 import type {
@@ -29,14 +31,13 @@ import { normalizeSystemPrompts } from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
 import { hasVisibleAssistantContent, withEmptyCompletionRetry } from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
-import { finalizeErrorMessage, type RawHttpRequestDump, rewriteCopilotError } from "../utils/http-inspector";
+import type { RawHttpRequestDump } from "../utils/http-inspector";
 import {
 	getOpenAIStreamFirstEventTimeoutMs,
 	getOpenAIStreamIdleTimeoutMs,
 	iterateWithIdleTimeout,
 	iterateWithTerminalGrace,
 } from "../utils/idle-iterator";
-import { parseStreamingJson, parseStreamingJsonThrottled } from "../utils/json-parse";
 import { OpenAIHttpError, postOpenAIStream } from "../utils/openai-http";
 import { notifyProviderResponse } from "../utils/provider-response";
 import { callWithCopilotModelRetry } from "../utils/retry";
@@ -46,6 +47,7 @@ import {
 	StreamMarkupHealing,
 	type StreamMarkupHealingEvent,
 } from "../utils/stream-markup-healing";
+import { stripVariant } from "../utils/strip";
 import { isForcedToolChoice, mapToOpenAICompletionsToolChoice } from "../utils/tool-choice";
 import type {
 	ChatCompletionAssistantMessageParam,
@@ -560,14 +562,16 @@ const streamOpenAICompletionsOnce = (
 	const stream = new AssistantMessageEventStream();
 
 	(async () => {
-		const startTime = Date.now();
+		const startTime = performance.now();
 		let firstTokenTime: number | undefined;
 		const policy = resolveOpenAICompatForRequest(model, options);
 
 		const output: AssistantMessage = createInitialResponsesAssistantMessage(model.api, model.provider, model.id);
 		let rawRequestDump: RawHttpRequestDump | undefined;
 		const abortTracker = createAbortSourceTracker(options?.signal);
-		const firstEventTimeoutAbortError = new Error(OPENAI_COMPLETIONS_FIRST_EVENT_TIMEOUT_MESSAGE);
+		const firstEventTimeoutAbortError = new AIError.StreamTimeoutError(
+			OPENAI_COMPLETIONS_FIRST_EVENT_TIMEOUT_MESSAGE,
+		);
 		const { requestAbortController, requestSignal } = abortTracker;
 		const onSseEvent = options?.onSseEvent;
 		const rawSseObserver = onSseEvent
@@ -868,7 +872,7 @@ const streamOpenAICompletionsOnce = (
 
 			const appendTextDelta = (text: string): void => {
 				if (!text) return;
-				if (!firstTokenTime) firstTokenTime = Date.now();
+				if (!firstTokenTime) firstTokenTime = performance.now();
 				appendText(output, stream, text);
 			};
 			// Tracks the last full cumulative reasoning snapshot per signature (the
@@ -895,7 +899,7 @@ const streamOpenAICompletionsOnce = (
 					lastCumulativeReasoningBySignature.set(key, thinking);
 					if (!emittedThinking) return;
 				}
-				if (!firstTokenTime) firstTokenTime = Date.now();
+				if (!firstTokenTime) firstTokenTime = performance.now();
 				appendThinking(output, stream, emittedThinking, signature);
 			};
 
@@ -1069,7 +1073,7 @@ const streamOpenAICompletionsOnce = (
 
 					const normalizedDeltaText = normalizeStreamingContentText(choice.delta.content);
 					if (normalizedDeltaText.length > 0) {
-						if (!firstTokenTime) firstTokenTime = Date.now();
+						if (!firstTokenTime) firstTokenTime = performance.now();
 						const hasStructuredToolCalls =
 							Array.isArray(choice.delta.tool_calls) && choice.delta.tool_calls.length > 0;
 
@@ -1254,23 +1258,26 @@ const streamOpenAICompletionsOnce = (
 				output.stopReason = "error";
 				output.errorMessage = EMPTY_OLLAMA_LENGTH_COMPLETION_MESSAGE;
 			}
-			const firstEventTimeoutError = abortTracker.getLocalAbortReason();
-			if (firstEventTimeoutError) {
-				throw firstEventTimeoutError;
+			const localAbortReason = abortTracker.getLocalAbortReason();
+			if (localAbortReason) {
+				throw localAbortReason;
 			}
 			if (abortTracker.wasCallerAbort()) {
-				throw new Error("Request was aborted");
+				throw new AIError.AbortError();
 			}
 
 			if (output.stopReason === "aborted") {
-				throw new Error("Request was aborted");
+				throw new AIError.AbortError();
 			}
 			if (output.stopReason === "error") {
-				throw new Error(output.errorMessage || "Provider returned an error stop reason");
+				throw new AIError.ProviderResponseError(output.errorMessage || "Provider returned an error stop reason", {
+					provider: model.provider,
+					kind: "runtime",
+				});
 			}
 
 			output.errorMessage = undefined;
-			output.duration = Date.now() - startTime;
+			output.duration = performance.now() - startTime;
 			if (firstTokenTime) output.ttft = firstTokenTime - startTime;
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
@@ -1281,19 +1288,23 @@ const streamOpenAICompletionsOnce = (
 			try {
 				finishOpenBlocksOnError();
 			} catch {}
-			for (const block of output.content) delete (block as OpenAICompletionsContentBlockWithIndex).index;
-			const firstEventTimeoutError = abortTracker.getLocalAbortReason();
-			output.stopReason = abortTracker.wasCallerAbort() ? "aborted" : "error";
+			for (const block of output.content) stripVariant<OpenAICompletionsContentBlockWithIndex>(block, "index");
 			const capturedErrorResponse = error instanceof OpenAIHttpError ? error.captured : undefined;
-			output.errorStatus = extractHttpStatusFromError(error) ?? capturedErrorResponse?.status;
-			output.errorMessage =
-				firstEventTimeoutError?.message ??
-				(await finalizeErrorMessage(error, rawRequestDump, capturedErrorResponse));
+			const result = await AIError.finalize(error, {
+				api: model.api,
+				provider: model.provider,
+				abortTracker,
+				rawRequestDump,
+				capturedErrorResponse,
+			});
+			output.stopReason = result.stopReason;
+			output.errorStatus = result.status;
+			output.errorId = result.id;
+			output.errorMessage = result.message;
 			// Some providers via OpenRouter include extra details here.
 			const rawMetadata = (error as { error?: { metadata?: { raw?: string } } })?.error?.metadata?.raw;
 			if (rawMetadata) output.errorMessage += `\n${rawMetadata}`;
-			output.errorMessage = rewriteCopilotError(output.errorMessage, error, model.provider);
-			output.duration = Date.now() - startTime;
+			output.duration = performance.now() - startTime;
 			if (firstTokenTime) output.ttft = firstTokenTime - startTime;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
@@ -1335,7 +1346,7 @@ function createRequestSetup(
 		azureChatCompletions: { apiVersion, deploymentName },
 	});
 	if (!setup.baseUrl) {
-		throw new Error("OpenAI request setup did not resolve a base URL");
+		throw new AIError.ConfigurationError("OpenAI request setup did not resolve a base URL");
 	}
 	return setup as OpenAIRequestSetup & { baseUrl: string };
 }
@@ -1438,6 +1449,13 @@ function buildParams(
 
 	if (options?.toolChoice && initialCompat.supportsToolChoice) {
 		params.tool_choice = mapToOpenAICompletionsToolChoice(options.toolChoice);
+	}
+	if (
+		typeof params.tool_choice === "object" &&
+		params.tool_choice !== null &&
+		!initialCompat.supportsNamedToolChoice
+	) {
+		params.tool_choice = "required";
 	}
 	if (isForcedToolChoice(params.tool_choice) && !initialCompat.supportsForcedToolChoice) {
 		// Some thinking-required OpenAI-compatible models reject forced
@@ -1769,13 +1787,14 @@ export function convertMessages(
 			const nonEmptyThinkingBlocks = thinkingBlocks.filter(b => b.thinking && b.thinking.trim().length > 0);
 			if (nonEmptyThinkingBlocks.length > 0) {
 				if (compat.requiresThinkingAsText) {
-					// Convert thinking blocks to plain text (no tags to avoid model mimicking them)
-					const thinkingText = nonEmptyThinkingBlocks.map(b => b.thinking).join("\n\n");
+					const thinkingText = nonEmptyThinkingBlocks
+						.map(b => renderDemotedThinking(model.id, b.thinking))
+						.join("");
 					// `content` is a plain string at this point (set above) or null —
-					// never an array. Prepend the thinking text to the string form.
+					// never an array. Prepend the demoted thinking to the string form.
 					assistantMsg.content =
 						typeof assistantMsg.content === "string" && assistantMsg.content.length > 0
-							? `${thinkingText}\n\n${assistantMsg.content}`
+							? `${thinkingText}${assistantMsg.content}`
 							: thinkingText;
 				} else if (compat.requiresReasoningContentForToolCalls) {
 					// Use the streamed signature when the backend accepts whichever

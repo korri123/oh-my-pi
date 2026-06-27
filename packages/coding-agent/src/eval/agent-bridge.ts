@@ -6,6 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Snowflake } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
+import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import type { ExecutorOptions } from "../task/executor";
 import * as taskExecutor from "../task/executor";
 import {
@@ -190,6 +191,7 @@ function getOutputManager(session: ToolSession): AgentOutputManager {
 interface ArtifactPaths {
 	sessionFile: string | null;
 	artifactsDir: string;
+	unregisterArtifactsDir?: () => void;
 	/**
 	 * True when `artifactsDir` was created off the session path (no session
 	 * file). Caller is then free to `rm -rf` it once all isolated patch
@@ -204,7 +206,8 @@ async function getArtifacts(session: ToolSession): Promise<ArtifactPaths> {
 	const tempArtifactsDir = sessionArtifactsDir === null;
 	const artifactsDir = sessionArtifactsDir ?? path.join(os.tmpdir(), `omp-eval-agent-${Snowflake.next()}`);
 	await fs.mkdir(artifactsDir, { recursive: true });
-	return { sessionFile, artifactsDir, tempArtifactsDir };
+	const unregisterArtifactsDir = tempArtifactsDir ? registerArtifactsDir(artifactsDir) : undefined;
+	return { sessionFile, artifactsDir, unregisterArtifactsDir, tempArtifactsDir };
 }
 
 /**
@@ -228,6 +231,10 @@ async function persistNestedPatches(
 		written.push(out);
 	}
 	return written;
+}
+
+function plainIsolationSummary(summary: string): string {
+	return summary.replace(/<\/?system-notification>/g, "").trim();
 }
 
 function emitProgressStatus(emitStatus: ((event: JsStatusEvent) => void) | undefined, progress: AgentProgress): void {
@@ -295,7 +302,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 	assertAgentEnabled(options.session, agentName, ctx.agents);
 	const effectiveAgent = ctx.agent;
 	const modelOverride = ctx.modelOverride;
-	const { sessionFile, artifactsDir, tempArtifactsDir } = await getArtifacts(options.session);
+	const { sessionFile, artifactsDir, unregisterArtifactsDir, tempArtifactsDir } = await getArtifacts(options.session);
 	const outputManager = getOutputManager(options.session);
 	const id = await outputManager.allocate(outputIdBase(parsed.label, agentName));
 	const assignment = parsed.prompt.trim();
@@ -422,7 +429,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 					);
 				}
 
-				mergeSummary += await applyEligibleNestedPatches({
+				const nestedSummary = await applyEligibleNestedPatches({
 					result,
 					repoRoot: isolationContext.repoRoot,
 					mergeMode,
@@ -430,6 +437,20 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 					mergedBranchForNestedPatches: outcome.mergedBranchForNestedPatches,
 					commitMessage: buildCommitMessage(),
 				});
+				mergeSummary += nestedSummary;
+				if (structured && nestedSummary.trim()) {
+					const recoveryParts: string[] = [];
+					if (result.nestedPatches?.length) {
+						const nestedPaths = await persistNestedPatches(artifactsDir, result.id, result.nestedPatches);
+						recoveryParts.push(
+							`Captured nested repository patches (${result.nestedPatches.length}) preserved at: ${nestedPaths.join(", ")}.`,
+						);
+					}
+					const recoveryHint = recoveryParts.length > 0 ? ` ${recoveryParts.join(" ")}` : "";
+					throw new ToolError(
+						`agent() isolated nested patch apply failed for ${result.id}: ${plainIsolationSummary(nestedSummary)}${recoveryHint}`,
+					);
+				}
 			} else if (result.branchName) {
 				mergeSummary = `\n\nIsolation: changes captured on branch \`${result.branchName}\` (apply=false). Not merged.`;
 			} else if (result.patchPath) {
@@ -454,6 +475,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 		const shouldCleanupTempArtifacts = tempArtifactsDir && !parsed.handle && (!isIsolated || changesApplied === true);
 		if (shouldCleanupTempArtifacts) {
 			await fs.rm(artifactsDir, { recursive: true, force: true });
+			unregisterArtifactsDir?.();
 		}
 
 		options.session.recordEvalSubagentUsage?.(result.usage?.output ?? 0);
