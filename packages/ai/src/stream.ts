@@ -1493,6 +1493,7 @@ function mapOptionsForApi<TApi extends Api>(
 					openrouterVariant: options?.openrouterVariant,
 					maxTokensExplicit: rawOptions?.maxTokens !== undefined,
 					disableReasoning: options?.disableReasoning,
+					textVerbosity: options?.textVerbosity,
 				});
 			}
 			return castApi<"openai-completions">({
@@ -1527,6 +1528,7 @@ function mapOptionsForApi<TApi extends Api>(
 				openrouterVariant: options?.openrouterVariant,
 				maxTokensExplicit: rawOptions?.maxTokens !== undefined,
 				disableReasoning: options?.disableReasoning,
+				textVerbosity: options?.textVerbosity,
 			});
 
 		case "azure-openai-responses":
@@ -1545,7 +1547,8 @@ function mapOptionsForApi<TApi extends Api>(
 				toolChoice: mapOpenAiToolChoice(options?.toolChoice),
 				serviceTier: options?.serviceTier,
 				preferWebsockets: options?.preferWebsockets,
-				reasoningSummary: options?.hideThinkingSummary ? null : undefined,
+				reasoningSummary: options?.hideThinkingSummary ? null : "detailed",
+				textVerbosity: options?.textVerbosity,
 			});
 
 		case "google-generative-ai": {

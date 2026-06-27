@@ -2,32 +2,31 @@
 
 ## [Unreleased]
 
+## [16.2.2] - 2026-06-27
+
 ### Added
 
 - Added an `advisor` option to the eval `agent()` helper (`agent(prompt, advisor=True)` / `agent(prompt, { advisor: true })`). It force-attaches an advisor to that single spawn by overriding both `advisor.enabled` and `advisor.subagents` for the child session, so advising works even when subagent advising is globally off. No-op when no `advisor`-role model resolves. Omit to inherit the parent session's advisor settings. Each advised turn runs a second model, so a wide `parallel()` fan-out multiplies spend.
 - Added an `integrate()` helper to the eval runtimes (Python/JS/Ruby/Julia) that merges a fan-out of isolated `agent()` patches into the working tree as a unit. Pass the handle nodes from `agent(isolated=True, apply=False, handle=True)`; patches apply in order (`order="auto"` smallest-first, or `"given"`), a 3-way conflict dispatches a resolver subagent (`on_conflict="resolve"`, default; `"abort"` stops), and the resolver's fix is verified host-side before acceptance. Integration runs in a throwaway worktree, so the combined delta only touches the real tree once every patch integrates cleanly — any failure leaves the tree untouched and reports per-patch `applied`/`resolved`/`failed` status. Branch-mode capture is rejected with an actionable error (use `merge=False`).
 - Added new `tiny` model role for consolidated online task handling
+- Added a new `tiny` model role for consolidated online task handling.
+- Added a `textVerbosity` setting to control OpenAI and Codex response detail.
 
 ### Changed
 
-- Simplified status line subagent display by removing running state and hub hint indicators
-- Updated online title, memory, and classification tasks to prioritize the `tiny` model role
-
-### Removed
-
-- Removed Pi model dialect support from settings
+- Simplified the status line subagent display by removing running state and hub hint indicators.
+- Updated online title, memory, and classification tasks to prioritize the new `tiny` model role.
 
 ### Fixed
 
-- Improved robustness of MCP authentication error detection and header-based server discovery
-- Fixed reliable detection of 401/403 authorization failures during Smithery commands and HTTP RPCs
-
-- Prevented auto-generated session titles from accidentally re-shouting user all-caps text
-- Fixed auto-generated session titles re-shouting emphatic ALL-CAPS from the user's message. `reconcileTitleCasing` (`packages/coding-agent/src/tiny/text.ts`) restored any source token with interior/repeated uppercase, so shouting like "unify ALL ERROR HANDLING" turned the model's clean sentence case ("Unify error handling…") back into "Unify ERROR HANDLING…". Casing is now restored only from mixed-case identifiers the user typed deliberately (`TinyVMM`, `iOS`, `IDs`); pure all-caps is left to the model's own output.
-- Fixed Tavily web search with recency filters to retry once without `time_range` when Tavily returns HTTP 200 with no renderable content. ([#3633](https://github.com/can1357/oh-my-pi/issues/3633))
-- Fixed TUI thought stream stalling and `ui.loop-blocked` warnings during subagent-heavy runs by replacing the mid-run compaction persistence check's O(n²) branch rebuild + per-pair `JSON.stringify` content compare with a one-shot persistence-key snapshot. Content equality is preserved as the rare collision tiebreaker. ([#3629](https://github.com/can1357/oh-my-pi/issues/3629))
-- Fixed marketplace-installed plugins appearing in both the npm plugin list and the OMP extension-package status provider. ([#3628](https://github.com/can1357/oh-my-pi/issues/3628))
-- Fixed inconsistent OpenRouter prompt-cache hits on `/advisor` turns: `AgentSession.#buildAdvisorRuntime` (`packages/coding-agent/src/session/agent-session.ts`) constructed the advisor `Agent` without the provider-shaping options the SDK installs on the main agent — the `streamFn` wrapper that applies `providers.openrouterVariant`, `providers.antigravityEndpoint`, `providers.maxInFlightRequests`, and `model.loopGuard.*`; the `onPayload`/`onResponse`/`onSseEvent` hooks; the shared `providerSessionState` map; `transformProviderContext` (snapcompact, secret obfuscation, image clamping); and a stable `promptCacheKey`. Advisor turns therefore dropped the OpenRouter sticky-routing variant suffix, used a different `prompt_cache_key` than the main turn, and skipped the per-session provider hooks — producing intermittent OpenRouter response-cache misses across consecutive advisor calls. The advisor now reuses the same wrapper through a new shared `createSettingsAwareStreamFn` helper (`packages/coding-agent/src/session/settings-stream-fn.ts`) and inherits every provider hook the main agent does. ([#3639](https://github.com/can1357/oh-my-pi/issues/3639))
+- Improved reliability of auto-retry logic for aborted requests by standardizing error classification across model adapters and ensuring stale session states are reset.
+- Enhanced MCP authentication error detection, header-based server discovery, and 401/403 authorization failure detection during Smithery commands and HTTP RPCs.
+- Fixed auto-generated session titles incorrectly preserving user all-caps text, ensuring proper sentence casing while still respecting intentional mixed-case identifiers.
+- Fixed Tavily web search with recency filters to automatically retry without a time range if Tavily returns an empty HTTP 200 response.
+- Fixed TUI thought stream stalling and `ui.loop-blocked` warnings during subagent-heavy runs by optimizing the mid-run compaction persistence check.
+- Fixed marketplace-installed plugins incorrectly appearing in both the npm plugin list and the extension-package status provider.
+- Fixed inconsistent OpenRouter prompt-cache hits on `/advisor` turns by ensuring advisor agents inherit the same provider-shaping options, hooks, and settings as the main agent.
+- Fixed path-scoped TTSR (Targeted Tool Safety Rules) evaluation for `hashline` and `apply_patch` edit streams, ensuring rules are correctly applied to file paths parsed from section headers and envelope markers without leaking across file scopes.
 
 ## [16.2.1] - 2026-06-27
 

@@ -2,9 +2,11 @@
 
 ## [Unreleased]
 
+## [16.2.2] - 2026-06-27
+
 ### Removed
 
-- Removed pi from the list of supported dialects
+- Removed 'pi' from the list of supported dialects.
 
 ## [16.2.0] - 2026-06-27
 

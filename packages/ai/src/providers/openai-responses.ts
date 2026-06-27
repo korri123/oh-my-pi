@@ -41,7 +41,6 @@ import {
 	sanitizeSchemaForOpenAIResponses,
 	toolWireSchema,
 } from "../utils/schema";
-import { stripVariant } from "../utils/strip";
 import {
 	isForcedToolChoice,
 	mapToOpenAIResponsesToolChoice,
@@ -99,6 +98,7 @@ export interface OpenAIResponsesOptions extends StreamOptions {
 	reasoning?: "minimal" | "low" | "medium" | "high" | "xhigh";
 	reasoningSummary?: "auto" | "detailed" | "concise" | null;
 	serviceTier?: ServiceTier;
+	textVerbosity?: "low" | "medium" | "high";
 	toolChoice?: ToolChoice;
 	openrouterVariant?: string;
 	maxTokensExplicit?: boolean;
@@ -271,7 +271,7 @@ function buildOpenAIResponsesChainedParams(
 			? { ...params, input: params.input.slice(0, params.input.length - trailingScaffoldingItems) }
 			: params;
 	const deltaInput = chain.canAppend
-		? buildResponsesDeltaInput<ResponseInput[number]>(chain.lastParams, chain.lastResponseItems, historyParams)
+		? buildResponsesDeltaInput(chain.lastParams, chain.lastResponseItems, historyParams)
 		: null;
 	if (deltaInput && deltaInput.length > 0 && chain.lastResponseId) {
 		const scaffolding =
@@ -738,7 +738,6 @@ const streamOpenAIResponsesOnce = (
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			for (const block of output.content) stripVariant<{ index?: number }>(block, "index");
 			if (chainState) resetOpenAIResponsesChainState(chainState);
 			const capturedErrorResponse = error instanceof OpenAIHttpError ? error.captured : undefined;
 			const result = await AIError.finalize(error, {
@@ -773,6 +772,16 @@ const streamOpenAIResponsesOnce = (
  */
 export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (model, context, options) =>
 	withEmptyCompletionRetry(model, context, options, streamOpenAIResponsesOnce);
+
+function isOfficialOpenAIResponsesEndpoint(model: Model<"openai-responses">): boolean {
+	if (model.provider !== "openai") return false;
+	if (!model.baseUrl) return true;
+	try {
+		return new URL(model.baseUrl).hostname === "api.openai.com";
+	} catch {
+		return false;
+	}
+}
 
 export function buildParams(
 	model: Model<"openai-responses">,
@@ -861,6 +870,9 @@ export function buildParams(
 	});
 
 	applyCommonResponsesSamplingParams(params, { ...options, maxTokens: outputToken?.value }, model);
+	if (options?.textVerbosity && isOfficialOpenAIResponsesEndpoint(model)) {
+		params.text = { ...params.text, verbosity: options.textVerbosity };
+	}
 	// TODO: openai responses has no top-level `stop`/`stop_sequences`; surface via reasoning.stop?
 	// `StreamOptions.stopSequences` is intentionally dropped for this provider.
 	// TODO: openai responses has no top-level `frequency_penalty` field as of the current SDK;
