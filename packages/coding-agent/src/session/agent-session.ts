@@ -231,6 +231,7 @@ import { containsWorkflow, WORKFLOW_NOTICE } from "../modes/workflow";
 import { createPlanReadMatcher } from "../plan-mode/plan-protection";
 import type { PlanModeState } from "../plan-mode/state";
 import advisorSystemPrompt from "../prompts/advisor/system.md" with { type: "text" };
+import goalTodoContextPrompt from "../prompts/goals/goal-todo-context.md" with { type: "text" };
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
 import eagerTaskPrompt from "../prompts/system/eager-task.md" with { type: "text" };
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
@@ -6468,14 +6469,44 @@ export class AgentSession {
 	#buildGoalModeMessage(): CustomMessage | null {
 		const content = this.#goalRuntime.buildActivePrompt();
 		if (!content) return null;
+		const todoContext = this.#buildGoalTodoContext();
 		return {
 			role: "custom",
 			customType: "goal-mode-context",
-			content,
+			content: todoContext ? `${content}\n\n${todoContext}` : content,
 			display: false,
 			attribution: "agent",
 			timestamp: Date.now(),
 		};
+	}
+
+	#buildGoalTodoContext(): string | undefined {
+		if (!this.settings.get("todo.enabled")) return undefined;
+		const phases = this.getTodoPhases().filter(phase => phase.tasks.length > 0);
+		if (phases.length === 0) return undefined;
+
+		let total = 0;
+		let closed = 0;
+		let open = 0;
+		const promptPhases = phases.map(phase => ({
+			name: phase.name,
+			tasks: phase.tasks.map(task => {
+				total++;
+				if (task.status === "completed" || task.status === "abandoned") {
+					closed++;
+				} else {
+					open++;
+				}
+				return { content: task.content, status: task.status };
+			}),
+		}));
+
+		return prompt.render(goalTodoContextPrompt, {
+			closed: String(closed),
+			open: String(open),
+			phases: promptPhases,
+			total: String(total),
+		});
 	}
 
 	#normalizeImagesForModel(images: ImageContent[] | undefined): Promise<ImageContent[] | undefined> {
@@ -9451,16 +9482,18 @@ export class AgentSession {
 		const errorIsFromBeforeCompaction =
 			compactionEntry !== null && assistantMessage.timestamp < new Date(compactionEntry.timestamp).getTime();
 		if (sameModel && !errorIsFromBeforeCompaction && AIError.isContextOverflow(assistantMessage, contextWindow)) {
-			// Remove the error message from agent state (it IS saved to session for history,
-			// but we don't want it in context for the retry)
-			const messages = this.agent.state.messages;
-			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
-				this.agent.replaceMessages(messages.slice(0, -1));
-			}
+			// Clear the failed turn from active context so the retry (or the next
+			// user prompt) does not replay it. The persisted branch entry stays
+			// for now: when no recovery path runs, the user-facing transcript
+			// MUST keep the only assistant message explaining why the turn
+			// stopped. The branch entry is dropped further down, but only on the
+			// paths that actually schedule a retry/compaction.
+			this.#removeAssistantMessageFromActiveContext(assistantMessage);
 
 			// Try context promotion first - switch to a larger model and retry without compacting
 			const promoted = await this.#tryContextPromotion(assistantMessage);
 			if (promoted) {
+				await this.#dropPersistedAssistantTurn(assistantMessage);
 				// Retry on the promoted (larger) model without compacting
 				this.#scheduleAgentContinue({ delayMs: 100, generation });
 				return COMPACTION_CHECK_CONTINUATION;
@@ -9469,7 +9502,9 @@ export class AgentSession {
 			// No promotion target available fall through to compaction
 			const compactionSettings = this.settings.getGroup("compaction");
 			if (compactionSettings.enabled && compactionSettings.strategy !== "off") {
-				return await this.#runAutoCompaction("overflow", true, false, allowDefer, { autoContinue });
+				return await this.#runRecoveryCompactionWithRollback("overflow", assistantMessage, allowDefer, {
+					autoContinue,
+				});
 			}
 			return COMPACTION_CHECK_NONE;
 		}
@@ -9481,13 +9516,14 @@ export class AgentSession {
 		// otherwise compaction/handoff. Unlike overflow, the *input* is fine, so we
 		// allow the handoff strategy to actually run.
 		if (sameModel && !errorIsFromBeforeCompaction && assistantMessage.stopReason === "length") {
-			const messages = this.agent.state.messages;
-			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
-				this.agent.replaceMessages(messages.slice(0, -1));
-			}
+			// Same active-context vs persisted-history split as the overflow path
+			// above: clear the dead turn from agent state so it cannot be replayed,
+			// but keep it on the branch unless promotion or compaction actually runs.
+			this.#removeAssistantMessageFromActiveContext(assistantMessage);
 
 			const promoted = await this.#tryContextPromotion(assistantMessage);
 			if (promoted) {
+				await this.#dropPersistedAssistantTurn(assistantMessage);
 				logger.debug("Context promotion triggered by response.incomplete (length stop)", {
 					from: `${assistantMessage.provider}/${assistantMessage.model}`,
 				});
@@ -9501,7 +9537,7 @@ export class AgentSession {
 					model: `${assistantMessage.provider}/${assistantMessage.model}`,
 					strategy: incompleteCompactionSettings.strategy,
 				});
-				return await this.#runAutoCompaction("incomplete", true, false, allowDefer, {
+				return await this.#runRecoveryCompactionWithRollback("incomplete", assistantMessage, allowDefer, {
 					autoContinue,
 					triggerContextTokens: calculateContextTokens(assistantMessage.usage),
 				});
@@ -9764,6 +9800,54 @@ export class AgentSession {
 		) {
 			this.agent.replaceMessages(messages.slice(0, -1));
 		}
+	}
+
+	/**
+	 * Drop a recoverable assistant turn from the persisted session branch once a
+	 * recovery path (context promotion or compaction) is committed. Waits for the
+	 * in-flight `message_end` persistence slot first so the branch entry exists
+	 * before we reparent past it. Active context removal is the caller's
+	 * responsibility — recovery paths clear it eagerly so the retry never
+	 * replays the failed turn, while no-recovery paths leave the persisted entry
+	 * (and the user-visible transcript line) in place.
+	 */
+	async #dropPersistedAssistantTurn(assistantMessage: AssistantMessage): Promise<void> {
+		await this.#waitForSessionMessagePersistence(assistantMessage);
+		this.#discardAssistantTurn(assistantMessage);
+	}
+
+	/**
+	 * Drop the failed assistant turn from persisted history, run
+	 * {@link #runAutoCompaction} for an `overflow` / `incomplete` recovery, and
+	 * restore the assistant entry if compaction did not actually commit
+	 * anything (no usable model/preparation, hook cancel, or compaction error).
+	 *
+	 * Compaction has to see a clean branch — otherwise its `prepareCompaction`
+	 * pass would keep the failed turn in the kept region and the retry would
+	 * replay it. But a NONE return that was not paired with a fresh compaction
+	 * summary means no recovery is in progress, and leaving the branch
+	 * reparented would erase the only user-visible explanation for why the turn
+	 * stopped. Reverting the drop in that case preserves the transcript while
+	 * still letting a real recovery path own the rewrite.
+	 */
+	async #runRecoveryCompactionWithRollback(
+		reason: "overflow" | "incomplete",
+		assistantMessage: AssistantMessage,
+		allowDefer: boolean,
+		options: { autoContinue: boolean; triggerContextTokens?: number },
+	): Promise<CompactionCheckResult> {
+		const compactionEntryBefore = getLatestCompactionEntry(this.sessionManager.getBranch());
+		await this.#dropPersistedAssistantTurn(assistantMessage);
+		const result = await this.#runAutoCompaction(reason, true, false, allowDefer, options);
+		const recoveryCommitted =
+			result.continuationScheduled || result.deferredHandoff || result.automaticContinuationBlocked === true;
+		if (!recoveryCommitted) {
+			const compactionEntryAfter = getLatestCompactionEntry(this.sessionManager.getBranch());
+			if (compactionEntryAfter === compactionEntryBefore) {
+				this.sessionManager.appendMessage(assistantMessage);
+			}
+		}
+		return result;
 	}
 
 	/**
