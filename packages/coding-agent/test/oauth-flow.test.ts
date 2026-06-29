@@ -84,7 +84,7 @@ describe("mcp oauth flow", () => {
 		expect(authUrl.searchParams.get("state")).toBe("test-state");
 	});
 
-	it("defaults prompt=consent so reauth can switch accounts despite an active browser session", async () => {
+	it("omits prompt by default so provider-specific reauth pages can use returning grants", async () => {
 		const flow = new MCPOAuthFlow(
 			{
 				authorizationUrl: "https://provider.example/authorize",
@@ -95,6 +95,22 @@ describe("mcp oauth flow", () => {
 		);
 
 		const { url } = await flow.generateAuthUrl("test-state", "http://127.0.0.1:53180/callback");
+
+		expect(new URL(url).searchParams.has("prompt")).toBe(false);
+	});
+
+	it("defaults prompt=consent when offline_access is requested", async () => {
+		const flow = new MCPOAuthFlow(
+			{
+				authorizationUrl: "https://provider.example/authorize",
+				tokenUrl: "https://provider.example/token",
+				clientId: "client-id",
+				scopes: "openid offline_access",
+			},
+			{},
+		);
+
+		const { url } = await flow.generateAuthUrl("test-state", "http://127.0.0.1:53184/callback");
 
 		expect(new URL(url).searchParams.get("prompt")).toBe("consent");
 	});
