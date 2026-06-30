@@ -178,8 +178,8 @@ export function buildEvalSubagentRunOptions(
 		parentMnemopiSessionState: session.getMnemopiSessionState?.(),
 		parentTelemetry: session.getTelemetry?.(),
 		parentAgentId: session.getAgentId?.() ?? MAIN_AGENT_ID,
-		// Live source of truth for `serviceTierSubagent: inherit` (null = explicit none).
-		parentServiceTier: session.getServiceTier ? (session.getServiceTier() ?? null) : undefined,
+		// Live source of truth for `tier.subagent: inherit` (null = explicit none).
+		parentServiceTier: session.getServiceTierByFamily ? (session.getServiceTierByFamily() ?? null) : undefined,
 		// Deliberately omit parentEvalSessionId: the parent's kernel is blocked
 		// on this bridge call, so sharing the eval session would deadlock.
 	};

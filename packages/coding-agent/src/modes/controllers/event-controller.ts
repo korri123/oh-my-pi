@@ -609,6 +609,15 @@ export class EventController {
 			}
 			for (const content of this.ctx.streamingMessage.content) {
 				if (content.type !== "toolCall") continue;
+				// Anthropic/OpenAI open a streamed tool block with an empty id (and
+				// `{}` args) before the id/arguments arrive; Gemini assembles the
+				// whole call first, so it never hits this. Keying `pendingTools` by
+				// "" would create a placeholder card, and the later real-id frame —
+				// `pendingTools.has(realId)` false — would create a SECOND card,
+				// orphaning the blank one (no `tool_execution_*` event ever carries
+				// "", so it is never matched, updated, or removed). Defer until the
+				// provider assigns the real id.
+				if (!content.id) continue;
 				if (content.name === "read") {
 					if (!readArgsHaveTarget(content.arguments)) {
 						// Args still streaming — defer until path is parseable so we can route to the
@@ -890,6 +899,13 @@ export class EventController {
 	}
 
 	async #handleToolExecutionEnd(event: Extract<AgentSessionEvent, { type: "tool_execution_end" }>): Promise<void> {
+		// A transient overlay (auto-compaction / auto-retry / handoff) that ran
+		// between this tool's start and end could have detached the working
+		// loader. `tool_execution_update` already reconciles this so the spinner
+		// reappears mid-tool; mirror it here so subagent (`task`) completions —
+		// which only fire `tool_execution_end`, never `_update` — do not leave
+		// the UI looking idle while the session keeps streaming (#3857).
+		this.#ensureWorkingLoaderWhileStreaming();
 		if (event.toolName === "read") {
 			if (this.#inlineReadToolImages(event.toolCallId, event.result)) {
 				const component = this.ctx.pendingTools.get(event.toolCallId);

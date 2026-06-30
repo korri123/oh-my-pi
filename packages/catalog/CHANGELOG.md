@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [16.2.9] - 2026-06-30
+
+### Added
+
+- Added full capability support for Claude Sonnet 5, aligning it with Claude Opus 4.8 and Fable 5. This includes adaptive thinking display, mid-conversation system messages, sampling parameter and thinking omission API restrictions, and 5-tier adaptive reasoning effort mapping (including xhigh and max levels) across direct APIs, OpenRouter, and Bedrock Converse.
+
+### Changed
+
+- Updated input and output costs for models in the catalog.
+
+## [16.2.7] - 2026-06-30
+
+### Fixed
+
+- Fixed compatibility with Kimi K2.7 Code on native endpoints to ensure thinking mode is preserved and tool choice is not forced.
+- Fixed Cerebras gemma-4-31b dynamic discovery to correctly identify the model as image-capable, enabling proper serialization of attached images.
+
 ## [16.2.6] - 2026-06-29
 
 ### Fixed

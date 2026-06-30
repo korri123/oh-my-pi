@@ -153,14 +153,44 @@ function resolveCallbackHostname(redirectUri: string | undefined): string | unde
 	return parsed.hostname;
 }
 
+/**
+ * Resolve the client_id MCPOAuthFlow would use without doing any I/O —
+ * either the explicitly configured value or one embedded as a query parameter
+ * in the authorization URL. Returns `undefined` when no client_id is known
+ * statically, which is the trigger for dynamic client registration in
+ * {@link MCPOAuthFlow.#tryRegisterClient}.
+ */
+function staticClientIdFromConfig(config: MCPOAuthConfig): string | undefined {
+	const fromConfig = config.clientId?.trim();
+	if (fromConfig) return fromConfig;
+	try {
+		return new URL(config.authorizationUrl).searchParams.get("client_id") ?? undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function resolveCallbackOptions(config: MCPOAuthConfig): OAuthCallbackFlowOptions {
 	const redirectUri = resolveRedirectUri(config.redirectUri);
 	validateRedirectConfig(config, redirectUri);
+	// When a client_id is already pinned (config-supplied or embedded in the
+	// authorization URL), it was registered against a specific redirect URI.
+	// Silently advertising a different port at the authorize endpoint would
+	// be rejected by providers like Atlassian (HTTP 500 in the browser, local
+	// flow hangs until the 5-minute timeout), so fail fast instead.
+	//
+	// When no client_id is pinned, MCPOAuthFlow will attempt dynamic client
+	// registration on demand with whichever loopback URI we actually bound —
+	// the provider issues a client_id tied to *that* URI, so the random-port
+	// fallback remains safe for first-install DCR flows whose preferred port
+	// happens to be occupied.
+	const allowPortFallback = staticClientIdFromConfig(config) === undefined;
 	return {
 		preferredPort: resolveCallbackPort(config.callbackPort, redirectUri),
 		callbackPath: resolveCallbackPath(config.callbackPath, redirectUri),
 		callbackHostname: resolveCallbackHostname(redirectUri),
 		redirectUri,
+		allowPortFallback,
 	};
 }
 
@@ -402,6 +432,7 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 				"Content-Type": "application/x-www-form-urlencoded",
 			},
 			body: params.toString(),
+			signal: this.ctrl.signal,
 		});
 
 		if (!response.ok) {
@@ -455,14 +486,7 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 	}
 
 	#resolveClientId(config: MCPOAuthConfig): string | undefined {
-		const fromConfig = config.clientId?.trim();
-		if (fromConfig) return fromConfig;
-
-		try {
-			return new URL(config.authorizationUrl).searchParams.get("client_id") ?? undefined;
-		} catch {
-			return undefined;
-		}
+		return staticClientIdFromConfig(config);
 	}
 	#resourceFromAuthorizationUrl(authorizationUrl: string): string | undefined {
 		try {
@@ -497,6 +521,7 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 					"Content-Type": "application/json",
 					Accept: "application/json",
 				},
+				signal: this.ctrl.signal,
 				body: JSON.stringify({
 					client_name: "oh-my-pi",
 					redirect_uris: [redirectUri],
@@ -562,6 +587,7 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 			const response = await this.#fetch(wellKnownUrl, {
 				method: "GET",
 				headers: { Accept: "application/json" },
+				signal: this.ctrl.signal,
 			});
 			if (!response.ok) return null;
 			const metadata = (await response.json()) as { registration_endpoint?: string };
@@ -580,6 +606,7 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 				method: "GET",
 				redirect: "manual",
 				headers: { Accept: "text/plain,text/html,application/json" },
+				signal: this.ctrl.signal,
 			});
 			if (response.status < 400) return;
 			const body = await response.text();

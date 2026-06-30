@@ -111,7 +111,7 @@ export interface TaskItem {
 }
 
 export const taskSchema = type({
-	agent: "string",
+	agent: "string = 'task'",
 	"id?": "string",
 	"description?": "string",
 	"role?": ROLE_INPUT_SCHEMA,
@@ -120,7 +120,7 @@ export const taskSchema = type({
 	"+": "delete",
 });
 const taskSchemaNoIsolation = type({
-	agent: "string",
+	agent: "string = 'task'",
 	"id?": "string",
 	"description?": "string",
 	"role?": ROLE_INPUT_SCHEMA,
@@ -128,13 +128,13 @@ const taskSchemaNoIsolation = type({
 	"+": "delete",
 });
 const taskSchemaBatch = type({
-	agent: "string",
+	agent: "string = 'task'",
 	context: "string",
 	tasks: taskItemSchemaIsolated.array(),
 	"+": "delete",
 });
 const taskSchemaBatchNoIsolation = type({
-	agent: "string",
+	agent: "string = 'task'",
 	context: "string",
 	tasks: taskItemSchema.array(),
 	"+": "delete",
@@ -160,7 +160,7 @@ export function getTaskSchema(options: { isolationEnabled: boolean; batchEnabled
  * transcripts using the flat form keep working under either setting.
  */
 export interface TaskParams {
-	/** Agent type; required. */
+	/** Agent type to spawn; defaults to `"task"` (the general-purpose worker) when omitted. */
 	agent?: string;
 	/** Stable agent id (flat form); default = generated AdjectiveNoun. */
 	id?: string;
@@ -383,6 +383,12 @@ export interface SingleResult {
 	patchPath?: string;
 	/** Branch name for isolated branch-mode output */
 	branchName?: string;
+	/**
+	 * Baseline commit SHA the task branch was created from. Passed to
+	 * `mergeTaskBranches` so cherry-pick uses the inclusive range
+	 * `branchBaseSha..branchName` and preserves every agent commit's message.
+	 */
+	branchBaseSha?: string;
 	/** Nested repo patches to apply after parent merge */
 	nestedPatches?: NestedRepoPatch[];
 	/** Data extracted by registered subprocess tool handlers (keyed by tool name) */

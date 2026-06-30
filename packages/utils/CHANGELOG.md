@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [16.2.9] - 2026-06-30
+
+### Added
+
+- Improved resilience in `fetchWithRetry()` by adding a response-body retry gate to handle deterministic provider failures that return retryable HTTP statuses.
+
+### Fixed
+
+- Fixed YAML frontmatter parsing for skill descriptions containing unquoted colons (`: `), ensuring typed fields are correctly preserved without triggering unnecessary warnings.
+
+## [16.2.7] - 2026-06-30
+
+### Added
+
+- Added a utility to detect binary files based on content sniffing.
+
 ## [16.2.6] - 2026-06-29
 
 ### Added
