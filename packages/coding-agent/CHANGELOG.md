@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `agent(prompt, agent="reviewer", schema=…)` (and any eval-bridge subagent whose caller-supplied output schema overrides an agent that prescribes its own incremental-`yield` labels) intermittently failing with `schema_violation: missing required fields`. The reviewer's prompt directs the model to `yield` under its native labels (`findings`, `overall_correctness`, `explanation`, `confidence`); when a caller overrode the schema with different fields, those labels were silently accepted, then finalization assembled an object missing every required override field. Two fixes: (1) under a closed override schema (`additionalProperties: false`), the `yield` tool now rejects an incremental section whose label is not a declared property — with retry feedback naming the offending label and listing the valid ones — instead of accumulating a doomed object; (2) agent bodies can fence native-schema-only guidance in `<!--omit-when-schema-override-->` regions that are stripped when a caller overrides the schema, and the subagent prompt marks the caller's schema authoritative. Open schemas keep free-form section labels loose.
+
 ## [16.2.9] - 2026-06-30
 
 ### Breaking Changes

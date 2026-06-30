@@ -66,6 +66,9 @@ Your result MUST match this TypeScript interface:
 ```ts
 {{jtdToTypeScript outputSchema}}
 ```
+{{#if outputSchemaOverridesAgent}}
+This schema is supplied by the caller and is authoritative. Populate exactly its fields; ignore any other output shape or `yield` section labels. When unsure, omit `type` and terminal-`yield` the complete object once.
+{{/if}}
 {{/if}}
 
 Giving up is a last resort. If truly blocked, you MUST terminal-yield `result.error` describing what you tried and the exact blocker.

@@ -110,6 +110,12 @@ export interface SubagentRunSpec {
 	description?: string;
 	/** Structured-output schema (omit for plain text). */
 	outputSchema?: unknown;
+	/**
+	 * True when {@link outputSchema} overrides an agent that declares its own native output shape,
+	 * so the subagent prompt marks the caller schema authoritative over the agent's baked-in field
+	 * guidance. Set by the `agent()` bridge; see {@link ExecutorOptions.outputSchemaOverridesAgent}.
+	 */
+	outputSchemaOverridesAgent?: boolean;
 	/** Session JSONL path, or null for an ephemeral (non-persisted) run. */
 	sessionFile: string | null;
 	/** Output artifacts dir. */
@@ -149,6 +155,7 @@ export function buildEvalSubagentRunOptions(
 		parentActiveModelPattern: ctx.parentActiveModelPattern,
 		thinkingLevel: ctx.agent.thinkingLevel,
 		outputSchema: spec.outputSchema,
+		outputSchemaOverridesAgent: spec.outputSchemaOverridesAgent,
 		sessionFile: spec.sessionFile,
 		persistArtifacts: spec.persistArtifacts ?? Boolean(spec.sessionFile),
 		artifactsDir: spec.artifactsDir,

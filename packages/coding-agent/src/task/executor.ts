@@ -295,6 +295,17 @@ export interface ExecutorOptions {
 	parentActiveModelPattern?: string;
 	thinkingLevel?: ThinkingLevel;
 	outputSchema?: unknown;
+	/**
+	 * True when {@link outputSchema} is a caller-supplied override (eval `agent(..., schema=…)`)
+	 * that replaces an agent whose own prompt prescribes a different output shape — e.g. the
+	 * built-in `reviewer`, which instructs incremental `yield` under `findings` /
+	 * `overall_correctness`. The subagent system prompt then tells the model the caller's schema
+	 * is authoritative and to ignore any field/section guidance baked into its role, preventing
+	 * the model from yielding native labels that can never satisfy the override (the
+	 * `schema_violation: missing required fields` failure mode). The `task` tool leaves this
+	 * unset because it uses the agent's native frontmatter schema, which matches its prompt.
+	 */
+	outputSchemaOverridesAgent?: boolean;
 	/** Parent task recursion depth (0 = top-level, 1 = first child, etc.) */
 	taskDepth?: number;
 	/**
@@ -494,6 +505,39 @@ interface FinalizeSubprocessOutputArgs {
 	reportFindings?: ReviewFinding[];
 	outputSchema: unknown;
 	lastAssistantText?: string;
+}
+
+const OMIT_REGION_OPEN = "<!--omit-when-schema-override-->";
+const OMIT_REGION_CLOSE = "<!--/omit-when-schema-override-->";
+
+/**
+ * Strip the `<!--omit-when-schema-override-->` … `<!--/omit-when-schema-override-->` regions an
+ * agent body uses to fence guidance that only applies to its NATIVE output schema (e.g. the
+ * `reviewer` agent's incremental-`yield` label instructions). When a caller overrides the schema
+ * via eval `agent(..., schema=…)`, those native labels can never satisfy the override, so the
+ * fenced text is removed; otherwise only the marker lines are dropped and the content stays.
+ *
+ * Markers must sit on their own lines (as authored). Kept deliberately literal — agent bodies are
+ * NOT Handlebars-rendered (a user agent may contain literal `{{`), so this is a brace-safe,
+ * opt-in alternative to templating the body.
+ */
+export function applyAgentBodyOmitRegions(body: string, omit: boolean): string {
+	if (!body.includes(OMIT_REGION_OPEN)) return body;
+	const out: string[] = [];
+	let omitting = false;
+	for (const line of body.split("\n")) {
+		const trimmed = line.trim();
+		if (trimmed === OMIT_REGION_OPEN) {
+			omitting = omit;
+			continue;
+		}
+		if (trimmed === OMIT_REGION_CLOSE) {
+			omitting = false;
+			continue;
+		}
+		if (!omitting) out.push(line);
+	}
+	return out.join("\n");
 }
 
 interface FinalizeSubprocessOutputResult {
@@ -1812,6 +1856,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		modelOverride,
 		thinkingLevel,
 		outputSchema,
+		outputSchemaOverridesAgent,
 		enableLsp,
 		signal,
 		onProgress,
@@ -2150,14 +2195,16 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				preloadedExtensionPaths: options.preloadedExtensionPaths,
 				preloadedCustomToolPaths: options.preloadedCustomToolPaths,
 				systemPrompt: defaultPrompt => {
+					const schemaOverridesAgent = outputSchemaOverridesAgent === true && normalizedOutputSchema !== undefined;
 					const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {
-						agent: agent.systemPrompt,
+						agent: applyAgentBodyOmitRegions(agent.systemPrompt, schemaOverridesAgent),
 						role: subagentRole ? oneLineLabel(subagentRole) : "",
 						context: options.context?.trim() ?? "",
 						planReference: options.planReference?.content ?? "",
 						planReferencePath: options.planReference?.path ?? "",
 						worktree: worktree ?? "",
 						outputSchema: normalizedOutputSchema,
+						outputSchemaOverridesAgent: schemaOverridesAgent,
 						ircPeers: ircEnabled ? renderIrcPeerRoster(id) : "",
 						ircSelfId: ircEnabled ? id : "",
 					});

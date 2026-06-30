@@ -51,6 +51,27 @@ function makeCodexModel(): Model<"openai-codex-responses"> {
 	});
 }
 
+function makeReviewerOverrideSchema(): Record<string, unknown> {
+	return {
+		properties: {
+			issue_key: { type: "string" },
+			verdict: { enum: ["clean", "blockers"] },
+		},
+		optionalProperties: {
+			blockers: {
+				elements: {
+					properties: {
+						title: { type: "string" },
+					},
+				},
+			},
+			non_blocking_notes: {
+				elements: { type: "string" },
+			},
+		},
+	};
+}
+
 describe("YieldTool", () => {
 	it("accepts success payload with data", async () => {
 		const tool = new YieldTool(createSession());
@@ -224,26 +245,44 @@ describe("YieldTool", () => {
 		).rejects.toThrow(/Section "findings" does not match schema.*body/);
 	});
 
-	it("leaves user-defined section labels unconstrained", async () => {
-		// Labels that are not top-level properties in the output schema have no per-call
-		// validator — they're scratchpad/streaming sections the agent invents at runtime and
-		// must not be rejected.
+	it("rejects unknown incremental labels under a closed override schema", async () => {
+		const tool = new YieldTool(createSession({ outputSchema: makeReviewerOverrideSchema() }));
+
+		await expect(tool.execute("c1", { type: ["explanation"], result: { data: "0.9" } } as never)).rejects.toThrow(
+			/Section "explanation".*Valid section labels:.*"issue_key".*omit "type"/,
+		);
+	});
+
+	it("accepts known incremental labels under a closed override schema", async () => {
+		const tool = new YieldTool(createSession({ outputSchema: makeReviewerOverrideSchema() }));
+
+		const result = await tool.execute("c2", {
+			type: ["blockers"],
+			result: { data: { title: "x" } },
+		} as never);
+
+		expect(result.details?.type).toEqual(["blockers"]);
+	});
+
+	it("keeps unknown incremental labels loose under an open override schema", async () => {
 		const tool = new YieldTool(
 			createSession({
 				outputSchema: {
+					type: "object",
 					properties: {
-						overall_correctness: { enum: ["correct", "incorrect"] },
-						explanation: { type: "string" },
-						confidence: { type: "number" },
+						a: { type: "string" },
 					},
+					required: ["a"],
 				},
 			}),
 		);
-		const result = await tool.execute("call-scratchpad", {
-			type: ["scratchpad"],
-			result: { data: { anything: "goes", n: 3 } },
+
+		const result = await tool.execute("c3", {
+			type: ["freeform_section"],
+			result: { data: { anything: 1 } },
 		} as never);
-		expect(result.details?.data).toEqual({ anything: "goes", n: 3 });
+
+		expect(result.details?.type).toEqual(["freeform_section"]);
 	});
 
 	it("rejects missing success data unless a yield type requests last-turn mode", async () => {

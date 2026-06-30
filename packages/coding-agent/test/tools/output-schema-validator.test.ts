@@ -99,6 +99,54 @@ describe("buildOutputValidator", () => {
 		// Unknown labels have no validator so user-defined sections stay loose.
 		expect(sections?.has("scratchpad")).toBe(false);
 	});
+
+	it("marks converted JTD object schemas as closed and exposes required and optional section labels", () => {
+		const { validator } = buildOutputValidator({
+			properties: {
+				issue_key: { type: "string" },
+				verdict: { enum: ["clean", "blockers"] },
+			},
+			optionalProperties: {
+				blockers: {
+					elements: {
+						properties: {
+							title: { type: "string" },
+						},
+					},
+				},
+			},
+		});
+		expect(validator).toBeDefined();
+		expect(validator?.closedTopLevel).toBe(true);
+		expect(validator?.sectionLabels).toEqual(new Set(["issue_key", "verdict", "blockers"]));
+	});
+
+	it("leaves plain JSON Schema objects open when additionalProperties is omitted while exposing labels", () => {
+		const { validator } = buildOutputValidator({
+			type: "object",
+			properties: {
+				a: { type: "string" },
+			},
+			required: ["a"],
+		});
+		expect(validator).toBeDefined();
+		expect(validator?.closedTopLevel).toBe(false);
+		expect(validator?.sectionLabels).toEqual(new Set(["a"]));
+	});
+
+	it("includes boolean-valued JSON Schema properties as section labels under closed schemas", () => {
+		const { validator } = buildOutputValidator({
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				foo: true,
+				bar: { type: "string" },
+			},
+		});
+		expect(validator).toBeDefined();
+		expect(validator?.closedTopLevel).toBe(true);
+		expect(validator?.sectionLabels).toEqual(new Set(["foo", "bar"]));
+	});
 });
 describe("summarizeValidationFailure", () => {
 	it("returns an empty summary when the result is a success", () => {

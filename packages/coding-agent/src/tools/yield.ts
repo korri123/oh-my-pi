@@ -109,6 +109,17 @@ function formatYieldLabels(labels: readonly string[]): string {
 }
 
 /**
+ * Model-facing message for an incremental `type: ["<label>"]` whose label is not a property of a
+ * closed override schema. Names the offending label and lists the valid section labels so the
+ * model can re-yield under the right field (or omit `type` for a single terminal result).
+ */
+function unknownSectionMessage(label: string, knownLabels: ReadonlySet<string>): string {
+	const valid = [...knownLabels].map(name => `"${name}"`).join(", ");
+	const validHint = valid.length > 0 ? `Valid section labels: ${valid}.` : "The schema declares no sections.";
+	return `Section "${label}" is not a field of the output schema; it can never satisfy the required output. ${validHint} Either re-yield under a valid section label, or omit "type" and yield the complete object once.`;
+}
+
+/**
  * Expand a plain-object `data` schema into a strict union that ALSO accepts each
  * top-level section value (and array element) on its own. Agents that yield
  * incrementally (`type: ["findings"]`, `type: ["confidence"]`, …) submit one
@@ -213,11 +224,17 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 
 	readonly #validate?: (value: unknown) => JsonSchemaValidationResult;
 	readonly #validateSection?: ReadonlyMap<string, (value: unknown) => JsonSchemaValidationResult>;
+	/** Top-level property names of a closed override schema; used to reject unknown incremental labels. */
+	readonly #sectionLabels?: ReadonlySet<string>;
+	/** True when the override schema sets `additionalProperties: false` at the root. */
+	readonly #closedTopLevel: boolean = false;
 	#schemaValidationFailures = 0;
 
 	constructor(session: ToolSession) {
 		let validate: ((value: unknown) => JsonSchemaValidationResult) | undefined;
 		let validateSection: ReadonlyMap<string, (value: unknown) => JsonSchemaValidationResult> | undefined;
+		let sectionLabels: ReadonlySet<string> | undefined;
+		let closedTopLevel = false;
 		let parameters: TSchema;
 
 		try {
@@ -230,6 +247,8 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			if (validator) {
 				validate = value => validator.validate(value);
 				validateSection = validator.validateSection;
+				sectionLabels = validator.sectionLabels;
+				closedTopLevel = validator.closedTopLevel;
 			}
 
 			const schemaHint = formatSchema(normalizedSchema ?? session.outputSchema);
@@ -275,11 +294,16 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				looseRecordSchema(`Structured JSON output (schema processing failed: ${errorMsg})`),
 			);
 			validate = undefined;
+			validateSection = undefined;
+			sectionLabels = undefined;
+			closedTopLevel = false;
 			this.strict = false;
 		}
 
 		this.#validate = validate;
 		this.#validateSection = validateSection;
+		this.#sectionLabels = sectionLabels;
+		this.#closedTopLevel = closedTopLevel;
 		this.parameters = parameters;
 	}
 
@@ -364,18 +388,33 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 
 	/**
 	 * Validate the `data` payload of an incremental yield (`type: ["<label>", …]`) against
-	 * the matching property's sub-validator. Returns the first failure across all known labels,
-	 * or `undefined` when no label is recognised (user-defined section labels stay loose) or
-	 * when all known labels accept the value. Lets the model see the same retry feedback that
-	 * the terminal-yield path already produces, instead of leaking the mismatch through to
-	 * the parent's post-mortem `schema_violation`.
+	 * the matching property's sub-validator.
+	 *
+	 * Under a **closed** override schema (`additionalProperties: false`), a label that is not a
+	 * declared top-level property can never survive the parent's post-mortem full-schema
+	 * validation — the assembled section would be an extra key the schema forbids, and the real
+	 * required fields would read as missing. Rather than accumulate that doomed object (the
+	 * `schema_violation: missing required fields` failure mode when an agent's prompt prescribes
+	 * incremental labels that a caller's override schema renamed), reject the unknown label here
+	 * so the model gets the same retry loop a sub-schema mismatch gets. Open schemas keep
+	 * unknown labels loose (free-form section names remain valid).
+	 *
+	 * Returns the first failure across the labels, or `undefined` when every label is recognised
+	 * and its value validates (or the schema is open and the label is unknown).
 	 */
 	#validateIncrementalSection(labels: string[], data: unknown): JsonSchemaValidationResult | undefined {
 		const subValidators = this.#validateSection;
-		if (!subValidators || subValidators.size === 0) return undefined;
+		const knownLabels = this.#sectionLabels;
+		const closed = this.#closedTopLevel;
+		if ((!subValidators || subValidators.size === 0) && !closed) return undefined;
 		for (const label of labels) {
-			const sub = subValidators.get(label);
-			if (!sub) continue;
+			const sub = subValidators?.get(label);
+			if (!sub) {
+				if (closed && knownLabels && !knownLabels.has(label)) {
+					return { success: false, issues: [{ path: [], message: unknownSectionMessage(label, knownLabels) }] };
+				}
+				continue;
+			}
 			const parsed = sub(data);
 			if (!parsed.success) return parsed;
 		}

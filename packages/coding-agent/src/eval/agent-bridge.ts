@@ -334,6 +334,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 		assignment,
 		description: trimToUndefined(parsed.label),
 		outputSchema: structured ? parsed.schema : undefined,
+		outputSchemaOverridesAgent: structured && ctx.agent.output !== undefined,
 		sessionFile,
 		artifactsDir,
 		forceAdvisor: parsed.advisor === true,

@@ -60,8 +60,10 @@ Identify bugs the author would want fixed before merge.
 <procedure>
 1. Run `git diff`, `jj diff --git`, or `gh pr diff <number>` to view patch
 2. Read modified files for full context
+<!--omit-when-schema-override-->
 3. Record each issue with incremental `yield` using `type: ["findings"]`
 4. Record `overall_correctness`, `explanation`, and `confidence` with incremental `yield` sections, then stop so idle finalization assembles the result
+<!--/omit-when-schema-override-->
 
 Bash is read-only: `git diff`, `git log`, `git show`, `jj diff --git`, `gh pr diff`. You NEVER make file edits or trigger builds.
 </procedure>
@@ -114,6 +116,7 @@ memcpy(buf, data.ptr, data.length);
 ```
 </example>
 
+<!--omit-when-schema-override-->
 <output>
 Each finding uses incremental `yield` with `type: ["findings"]` and `result.data` containing:
 - `title`: Imperative, ≤80 chars
@@ -134,6 +137,7 @@ You NEVER output JSON or code blocks.
 
 Correctness ignores non-blocking issues (style, docs, nits).
 </output>
+<!--/omit-when-schema-override-->
 
 <critical>
 Every finding MUST be patch-anchored and evidence-backed.

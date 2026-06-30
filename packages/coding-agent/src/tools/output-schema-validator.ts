@@ -31,6 +31,22 @@ export interface OutputValidator {
 	 * mismatch to the parent's post-mortem `schema_violation`.
 	 */
 	readonly validateSection: ReadonlyMap<string, (value: unknown) => JsonSchemaValidationResult>;
+	/**
+	 * Every declared top-level property name, including ones whose schema is a boolean
+	 * (`{ foo: true }`) that {@link validateSection} omits. The yield tool uses this — not
+	 * the validator map — to decide whether an incremental `type: ["<label>"]` names a real
+	 * field, so a boolean-schema property is still recognised as a known section label.
+	 */
+	readonly sectionLabels: ReadonlySet<string>;
+	/**
+	 * True when the root schema sets `additionalProperties: false`, so a section labelled with
+	 * a name absent from {@link sectionLabels} can never appear in a valid assembled result.
+	 * The yield tool rejects such labels up front (with the same retry loop a sub-schema
+	 * mismatch gets) instead of accumulating them into a doomed object that only fails the
+	 * parent's post-mortem `schema_violation`. Open schemas (`additionalProperties` omitted or
+	 * `true`) keep unknown labels loose.
+	 */
+	readonly closedTopLevel: boolean;
 }
 
 export interface BuildOutputValidatorResult {
@@ -83,6 +99,8 @@ export function buildOutputValidator(schema: unknown): BuildOutputValidatorResul
 			requiredFields: required,
 			validate: value => validateJsonSchemaValue(jsonSchemaRecord, value),
 			validateSection: buildSectionValidators(jsonSchemaRecord),
+			sectionLabels: extractTopLevelPropertyNames(jsonSchemaRecord),
+			closedTopLevel: jsonSchemaRecord.additionalProperties === false,
 		},
 	};
 }
@@ -112,6 +130,18 @@ function buildSectionValidators(
 		validators.set(label, value => validateJsonSchemaValue(sectionSchema, value));
 	}
 	return validators;
+}
+
+/**
+ * Every declared top-level property name, regardless of its sub-schema shape. Unlike
+ * {@link buildSectionValidators}, this keeps boolean property schemas (`{ foo: true }`,
+ * `{ foo: false }`) — they are valid section labels even though they carry no sub-validator,
+ * so the yield tool must not mistake them for unknown labels under a closed schema.
+ */
+function extractTopLevelPropertyNames(jsonSchema: Record<string, unknown>): ReadonlySet<string> {
+	const properties = jsonSchema.properties;
+	if (properties === null || typeof properties !== "object") return new Set();
+	return new Set(Object.keys(properties as Record<string, unknown>));
 }
 
 /** Produce the executor's headline+missing-required summary from a failed validation. */
