@@ -5,6 +5,13 @@
 ### Fixed
 
 - Fixed `agent(prompt, agent="reviewer", schema=…)` (and any eval-bridge subagent whose caller-supplied output schema overrides an agent that prescribes its own incremental-`yield` labels) intermittently failing with `schema_violation: missing required fields`. The reviewer's prompt directs the model to `yield` under its native labels (`findings`, `overall_correctness`, `explanation`, `confidence`); when a caller overrode the schema with different fields, those labels were silently accepted, then finalization assembled an object missing every required override field. Two fixes: (1) under a closed override schema (`additionalProperties: false`), the `yield` tool now rejects an incremental section whose label is not a declared property — with retry feedback naming the offending label and listing the valid ones — instead of accumulating a doomed object; (2) agent bodies can fence native-schema-only guidance in `<!--omit-when-schema-override-->` regions that are stripped when a caller overrides the schema, and the subagent prompt marks the caller's schema authoritative. Open schemas keep free-form section labels loose.
+## [16.2.13] - 2026-07-01
+
+### Fixed
+
+- Fixed `models.yml` remote compaction schema support for V2 streaming endpoint fields. ([#4146](https://github.com/can1357/oh-my-pi/issues/4146))
+- Fixed the SSH tool to reject `cwd` values of `~` and `~/...` before sending guaranteed-bad quoted tilde paths to remote POSIX shells. ([#4002](https://github.com/can1357/oh-my-pi/issues/4002))
+
 ## [16.2.12] - 2026-07-01
 
 ### Breaking Changes
