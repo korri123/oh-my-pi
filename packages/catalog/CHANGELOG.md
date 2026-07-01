@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [16.2.12] - 2026-07-01
+
+### Breaking Changes
+
+- Removed runtime canonical-equivalence APIs from the identity module, including resolveCanonicalVariant, buildCanonicalModelOrder, CanonicalVariantPreferences, and getBundledCanonicalReferenceData. These utilities have been transitioned to a build-time generator script and are no longer exposed in the runtime bundle.
+
+## [16.2.11] - 2026-07-01
+
+### Fixed
+
+- Fixed a potential memory leak caused by dangling timeout timers during model discovery in OpenAI-compatible, vLLM, LiteLLM, and LM Studio catalogs.
+- Widened stream watchdogs for local OpenAI-compatible backends (including llama.cpp, LM Studio, vLLM, and Ollama) to prevent premature timeouts during cold model loads.
+
 ## [16.2.10] - 2026-06-30
 
 ### Added

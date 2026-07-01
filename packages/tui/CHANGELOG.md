@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [16.2.12] - 2026-07-01
+
+### Fixed
+
+- Optimized streaming markdown rendering to reuse already-rendered prefix lines and only render new content deltas, improving performance and reducing redraw flicker.
+
 ## [16.2.10] - 2026-06-30
 
 ### Fixed

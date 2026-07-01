@@ -67,6 +67,10 @@ function syncToolCall(target: StreamingToolCall, source: StreamingToolCall): voi
 	else setStreamingPartialJson(target, partialJson);
 }
 
+function hasNamedNativeToolCall(source: StreamingToolCall | undefined): source is StreamingToolCall {
+	return source !== undefined && source.name.trim().length > 0;
+}
+
 export function parseInbandToolMessage(
 	message: AssistantMessage,
 	dialect: Dialect,
@@ -208,10 +212,10 @@ class InbandStreamProjector {
 	// stream's current partial block. When owned mode wraps a provider that still
 	// emits native tool calls, the projected block must mirror the provider's live
 	// id / args / partial-json state rather than inventing `{ id: "", arguments:
-	// {} }` placeholders — otherwise the UI loses streaming args and can mis-key
-	// the call until `toolcall_end`.
+	// {} }` placeholders — otherwise the UI loses streaming args, can mis-key the
+	// call until `toolcall_end`.
 	nativeToolStart(srcIndex: number, source: StreamingToolCall | undefined): void {
-		if (this.#stopped || !source?.name || this.#toolChannel === "inband") return;
+		if (this.#stopped || !hasNamedNativeToolCall(source) || this.#toolChannel === "inband") return;
 		this.#toolChannel = "native";
 		this.#closeText();
 		this.#closeThinking();
@@ -225,7 +229,7 @@ class InbandStreamProjector {
 	nativeToolDelta(srcIndex: number, delta: string, source: StreamingToolCall | undefined): void {
 		if (this.#stopped) return;
 		let entry = this.#nativeBlocks.get(srcIndex);
-		if (!entry && source?.name && this.#toolChannel !== "inband") {
+		if (!entry && hasNamedNativeToolCall(source) && this.#toolChannel !== "inband") {
 			this.nativeToolStart(srcIndex, source);
 			entry = this.#nativeBlocks.get(srcIndex);
 		}
@@ -253,7 +257,7 @@ class InbandStreamProjector {
 		// Never streamed (name was empty at start). Salvage a real call whose name
 		// only arrived now; drop nameless ghosts and anything the in-band channel
 		// already claimed.
-		if (!toolCall.name || this.#toolChannel === "inband") return;
+		if (!hasNamedNativeToolCall(toolCall) || this.#toolChannel === "inband") return;
 		this.#toolChannel = "native";
 		this.#closeText();
 		this.#closeThinking();
