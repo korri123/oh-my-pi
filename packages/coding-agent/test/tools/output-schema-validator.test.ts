@@ -117,11 +117,13 @@ describe("buildOutputValidator", () => {
 			},
 		});
 		expect(validator).toBeDefined();
-		expect(validator?.closedTopLevel).toBe(true);
-		expect(validator?.sectionLabels).toEqual(new Set(["issue_key", "verdict", "blockers"]));
+		expect(validator?.rejectUnknownSections).toBe(true);
+		expect(validator?.knownSectionLabels).toEqual(["issue_key", "verdict", "blockers"]);
+		expect(validator?.isKnownSection("blockers")).toBe(true);
+		expect(validator?.isKnownSection("scratchpad")).toBe(false);
 	});
 
-	it("leaves plain JSON Schema objects open when additionalProperties is omitted while exposing labels", () => {
+	it("leaves plain JSON Schema objects open when additionalProperties is omitted", () => {
 		const { validator } = buildOutputValidator({
 			type: "object",
 			properties: {
@@ -130,8 +132,10 @@ describe("buildOutputValidator", () => {
 			required: ["a"],
 		});
 		expect(validator).toBeDefined();
-		expect(validator?.closedTopLevel).toBe(false);
-		expect(validator?.sectionLabels).toEqual(new Set(["a"]));
+		expect(validator?.rejectUnknownSections).toBe(false);
+		expect(validator?.knownSectionLabels).toEqual([]);
+		expect(validator?.isKnownSection("a")).toBe(true);
+		expect(validator?.isKnownSection("scratchpad")).toBe(true);
 	});
 
 	it("includes boolean-valued JSON Schema properties as section labels under closed schemas", () => {
@@ -144,8 +148,10 @@ describe("buildOutputValidator", () => {
 			},
 		});
 		expect(validator).toBeDefined();
-		expect(validator?.closedTopLevel).toBe(true);
-		expect(validator?.sectionLabels).toEqual(new Set(["foo", "bar"]));
+		expect(validator?.rejectUnknownSections).toBe(true);
+		expect(validator?.knownSectionLabels).toEqual(["foo", "bar"]);
+		expect(validator?.isKnownSection("foo")).toBe(true);
+		expect(validator?.isKnownSection("baz")).toBe(false);
 	});
 });
 describe("summarizeValidationFailure", () => {
