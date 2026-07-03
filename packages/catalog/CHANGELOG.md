@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+## [16.3.4] - 2026-07-03
+
+### Added
+
+- Added Baseten as a supported model provider
+- Added support for new models from Baseten, including DeepSeek V4 Pro and Kimi series
+- Added new Devin agent models: Claude 5 Fable variants
+- Added new Github Copilot models: Kimi K2.7 Code and MAI-Code-1-Flash
+- Added Poolside Laguna XS 2.1 models via Kilo and OpenRouter providers
+- Added support for Claude Fable 5 (Free) via Zenmux provider
+
+### Changed
+
+- Updated priority ordering to include Baseten
+- Updated pricing and limits for various existing models in the catalog
+
+## [16.3.3] - 2026-07-02
+
+### Fixed
+
+- Extended Anthropic-compatible signing-endpoint recognition to Cloudflare AI Gateway, Google Vertex, AWS Bedrock, and Azure AI Inference / Foundry to ensure consistent reasoning-replay and signature-stripping behavior, and exposed ResolvedAnthropicCompat.signingEndpoint in the public API.
+- Fixed Zhipu Coding Plan runtime discovery to prioritize account-scoped model lists over bundled fallback models, preventing routing errors for valid non-z.ai keys.
+
+## [16.3.2] - 2026-07-02
+
+### Fixed
+
+- Fixed ZenMux model discovery to run without a `ZENMUX_API_KEY`, so newly published ZenMux models (for example `anthropic/claude-fable-5-free`) auto-update into the runtime `models.db` cache instead of waiting on a regenerated `models.json`.
+- Fixed ZenMux runtime discovery to query the `/api/v1/models` endpoint even when the resolved provider base URL points at the Anthropic-compatible route, so discovery no longer requests a non-existent `/api/anthropic/models` path.
+
 ## [16.3.1] - 2026-07-02
 
 ### Removed

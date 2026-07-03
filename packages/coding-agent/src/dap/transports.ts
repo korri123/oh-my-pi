@@ -7,6 +7,14 @@ import type { DapClientState, DapResolvedAdapter } from "./types";
 export interface DapSpawnOptions {
 	adapter: DapResolvedAdapter;
 	cwd: string;
+	/**
+	 * Cap on how long socket-mode helpers wait for the adapter to open its
+	 * socket (unix) or dial back into our listener (TCP). Exposed for tests;
+	 * production callers rely on the default.
+	 *
+	 * @internal
+	 */
+	socketReadyTimeoutMs?: number;
 }
 
 export interface DapConnectOptions extends DapSpawnOptions {
@@ -17,7 +25,7 @@ export interface DapConnectOptions extends DapSpawnOptions {
 /** Minimal write interface shared by Bun.FileSink and Bun TCP sockets. */
 export interface DapWriteSink {
 	write(data: string | Uint8Array): number | Promise<number>;
-	flush(): number | void | Promise<number | void>;
+	flush(): number | undefined | Promise<number | undefined>;
 }
 
 export interface DapTransportHandle {
@@ -28,6 +36,8 @@ export interface DapTransportHandle {
 	port?: number;
 	transportClosed?: Promise<void>;
 }
+
+const SOCKET_READY_TIMEOUT_MS = 10_000;
 
 interface SocketTransport {
 	readable: ReadableStream<Uint8Array>;
@@ -42,12 +52,13 @@ function adapterEnv(): Record<string, string | undefined> {
 	};
 }
 
-export async function spawnDapTransport({ adapter, cwd }: DapSpawnOptions): Promise<DapTransportHandle> {
+export async function spawnDapTransport(options: DapSpawnOptions): Promise<DapTransportHandle> {
+	const { adapter, cwd } = options;
 	if (adapter.connectMode === "socket") {
-		return spawnSocketTransport({ adapter, cwd });
+		return spawnSocketTransport(options);
 	}
 	if (adapter.connectMode === "tcp") {
-		return spawnTcpTransport({ adapter, cwd });
+		return spawnTcpTransport(options);
 	}
 	// Merge non-interactive env and start in a new session (detached → setsid)
 	// so the adapter process tree has no controlling terminal. Without this,
@@ -115,14 +126,19 @@ async function spawnTcpTransport({ adapter, cwd }: DapSpawnOptions): Promise<Dap
  * Linux: connect to a unix domain socket via --listen=unix:<path>
  * macOS/other: the adapter dials into our TCP listener via --client-addr
  */
-async function spawnSocketTransport({ adapter, cwd }: DapSpawnOptions): Promise<DapTransportHandle> {
+async function spawnSocketTransport({
+	adapter,
+	cwd,
+	socketReadyTimeoutMs,
+}: DapSpawnOptions): Promise<DapTransportHandle> {
 	const env = adapterEnv();
+	const timeoutMs = socketReadyTimeoutMs ?? SOCKET_READY_TIMEOUT_MS;
 	const isLinux = process.platform === "linux";
 
 	if (isLinux) {
-		return spawnSocketUnixTransport({ adapter, cwd, env });
+		return spawnSocketUnixTransport({ adapter, cwd, env, timeoutMs });
 	}
-	return spawnSocketClientAddrTransport({ adapter, cwd, env });
+	return spawnSocketClientAddrTransport({ adapter, cwd, env, timeoutMs });
 }
 
 /** Linux: spawn adapter with --listen=unix:<path>, then connect to the socket. */
@@ -130,10 +146,12 @@ async function spawnSocketUnixTransport({
 	adapter,
 	cwd,
 	env,
+	timeoutMs,
 }: {
 	adapter: DapResolvedAdapter;
 	cwd: string;
 	env: Record<string, string | undefined>;
+	timeoutMs: number;
 }): Promise<DapTransportHandle> {
 	const socketPath = `/tmp/dap-${adapter.name}-${Date.now()}-${Math.random().toString(36).slice(2)}.sock`;
 	const proc = ptree.spawn([adapter.resolvedCommand, ...adapter.args, `--listen=unix:${socketPath}`], {
@@ -143,10 +161,18 @@ async function spawnSocketUnixTransport({
 		detached: true,
 	});
 
-	await waitForCondition(() => isUnixSocketReady(socketPath), 10_000, proc);
-
-	const transport = await connectSocket({ unix: socketPath });
-	return { proc, ...transport };
+	try {
+		await waitForCondition(() => isUnixSocketReady(socketPath), timeoutMs, proc);
+		const transport = await connectSocket({ unix: socketPath });
+		return { proc, ...transport };
+	} catch (error) {
+		try {
+			proc.kill();
+		} catch {
+			/* proc may already be dead */
+		}
+		throw error;
+	}
 }
 
 /** macOS/other: listen on a random TCP port, spawn adapter with --client-addr, accept connection. */
@@ -154,10 +180,12 @@ async function spawnSocketClientAddrTransport({
 	adapter,
 	cwd,
 	env,
+	timeoutMs,
 }: {
 	adapter: DapResolvedAdapter;
 	cwd: string;
 	env: Record<string, string | undefined>;
+	timeoutMs: number;
 }): Promise<DapTransportHandle> {
 	const { promise: connPromise, resolve: resolveConn } = Promise.withResolvers<Bun.Socket<undefined>>();
 
@@ -183,22 +211,26 @@ async function spawnSocketClientAddrTransport({
 		detached: true,
 	});
 
-	// Wait for dlv to connect (with timeout)
-	let rawSocket: Bun.Socket<undefined>;
 	const { promise: timeoutPromise, reject: rejectTimeout } = Promise.withResolvers<never>();
 	const connectTimeout = setTimeout(
-		() => rejectTimeout(new Error(`${adapter.name} did not connect within 10s`)),
-		10_000,
+		() => rejectTimeout(new Error(`${adapter.name} did not connect within ${timeoutMs}ms`)),
+		timeoutMs,
 	);
 	try {
-		rawSocket = await Promise.race([connPromise, timeoutPromise]);
+		const rawSocket = await Promise.race([connPromise, timeoutPromise]);
+		const transport = wrapBunSocket(rawSocket);
+		return { proc, ...transport };
+	} catch (error) {
+		try {
+			proc.kill();
+		} catch {
+			/* proc may already be dead */
+		}
+		throw error;
 	} finally {
 		clearTimeout(connectTimeout);
 		server.stop();
 	}
-
-	const transport = wrapBunSocket(rawSocket);
-	return { proc, ...transport };
 }
 
 async function isUnixSocketReady(socketPath: string): Promise<boolean> {

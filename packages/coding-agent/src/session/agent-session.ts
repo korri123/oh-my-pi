@@ -121,6 +121,7 @@ import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { MacOSPowerAssertion } from "@oh-my-pi/pi-natives";
 import {
+	escapeXmlText,
 	extractRetryHint,
 	formatDuration,
 	getAgentDbPath,
@@ -237,6 +238,7 @@ import { containsWorkflow, WORKFLOW_NOTICE } from "../modes/workflow";
 import { createPlanReadMatcher } from "../plan-mode/plan-protection";
 import type { PlanModeState } from "../plan-mode/state";
 import advisorSystemPrompt from "../prompts/advisor/system.md" with { type: "text" };
+import goalModeContextPrompt from "../prompts/goals/goal-mode-context.md" with { type: "text" };
 import goalTodoContextPrompt from "../prompts/goals/goal-todo-context.md" with { type: "text" };
 import parentIrcSteerTemplate from "../prompts/steering/parent-irc.md" with { type: "text" };
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
@@ -358,6 +360,8 @@ import { classifyUnexpectedStop, isUnexpectedStopCandidate } from "./unexpected-
 import { YieldQueue } from "./yield-queue";
 
 const SESSION_STOP_CONTINUATION_CAP = 8;
+const PLAN_MODE_REMINDER_MAX = 3;
+const PLAN_DECISION_TOOLS = new Set(["ask", "resolve"]);
 
 /**
  * Mutating tool results (`bash`/`eval`/`edit`/`write`/`ast_edit`) without the
@@ -965,6 +969,18 @@ interface ActiveAdvisor {
 	agentUnsubscribe?: () => void;
 	model: Model;
 	thinkingLevel: ThinkingLevel;
+	/** Stable key for the resolved runtime inputs that require a rebuild to change. */
+	signature: string;
+}
+
+/** Resolved advisor config ready to instantiate as an {@link ActiveAdvisor}. */
+interface AdvisorRuntimeDescriptor {
+	config: AdvisorConfig;
+	name: string;
+	slug: string;
+	model: Model;
+	thinkingLevel: ThinkingLevel;
+	signature: string;
 }
 
 export interface FreshSessionResult {
@@ -1587,6 +1603,8 @@ export class AgentSession {
 	/** Mid-run nudges fired this prompt cycle; capped by
 	 *  {@link MID_RUN_TODO_NUDGE_MAX_PER_CYCLE}, reset with the counter above. */
 	#midRunNudgeCount = 0;
+	#planModeReminderCount = 0;
+	#planModeReminderAwaitingProgress = false;
 	#todoPhases: TodoPhase[] = [];
 	#replanTitleRefreshInFlight: Promise<void> | undefined = undefined;
 	/** Resolved TITLE_SYSTEM.md override applied to every automatic session-title
@@ -1861,6 +1879,21 @@ export class AgentSession {
 		const records = [...this.#pendingIrcInterrupts, ...this.#pendingIrcAsides];
 		this.#pendingIrcInterrupts = [];
 		this.#pendingIrcAsides = [];
+		if (this.#planModeState?.enabled) {
+			// Plan mode: fold stranded IRC asides into context without waking an
+			// autonomous turn. Convergence to ask/resolve stays user-driven.
+			for (const record of records) {
+				this.agent.appendMessage(record);
+				this.sessionManager.appendCustomMessageEntry(
+					record.customType,
+					record.content,
+					record.display,
+					record.details,
+					record.attribution ?? "agent",
+				);
+			}
+			return;
+		}
 		this.#wakeForIrc(records);
 	}
 
@@ -2247,32 +2280,10 @@ export class AgentSession {
 		}
 	}
 
-	#buildAdvisorRuntime(seedToCurrent = false): boolean {
-		if (this.#isDisposed) return false;
-		if (this.#advisors.length > 0) return true;
-		if (!this.#advisorEnabled) return false;
-		if (this.#agentKind !== "main" && !this.settings.get("advisor.subagents")) return false;
-
-		// The lone implicit "default" advisor (slug "") reproduces the legacy
-		// single-advisor path: the `advisor` role model + `__advisor.jsonl`.
+	#resolveAdvisorRuntimeDescriptors(emitWarnings: boolean): AdvisorRuntimeDescriptor[] {
 		const legacy = !this.#advisorConfigs?.length;
 		const roster: AdvisorConfig[] = legacy ? [{ name: "default" }] : this.#advisorConfigs!;
-
-		// Advisor service tier (`tier.advisor`): "none" (default) runs the advisor
-		// on standard processing; "inherit" tracks the session's live per-family
-		// tiers per request (like the main agent, including /fast toggles); a
-		// concrete value is broadcast across families and applied to the advisor
-		// model's family. One value for all advisors.
-		const advisorTierSetting = this.settings.get("tier.advisor");
-		const advisorTierMap =
-			advisorTierSetting === "inherit"
-				? undefined
-				: serviceTierForAllFamilies(serviceTierSettingToTier(advisorTierSetting));
-		const advisorServiceTierResolver = (model: Model): ServiceTier | undefined =>
-			advisorTierSetting === "inherit"
-				? this.#effectiveServiceTier(model)
-				: resolveModelServiceTier(advisorTierMap, model);
-
+		const descriptors: AdvisorRuntimeDescriptor[] = [];
 		const usedSlugs = new Set<string>();
 		for (const config of roster) {
 			let slug = legacy ? "" : slugifyAdvisorName(config.name);
@@ -2293,23 +2304,84 @@ export class AgentSession {
 				model = resolved.model;
 				thinkingLevel = concreteThinkingLevel(resolved.thinkingLevel);
 				if (!model) {
-					this.emitNotice("warning", `Advisor "${config.name}": no model matched "${config.model}"`, "advisor");
+					if (emitWarnings) {
+						this.emitNotice("warning", `Advisor "${config.name}": no model matched "${config.model}"`, "advisor");
+					}
 					continue;
 				}
 			} else {
 				const sel = resolveAdvisorRoleSelection(this.settings, this.#modelRegistry.getAvailable());
 				if (!sel) {
-					logger.debug("advisor enabled but no model assigned to the 'advisor' role; advisor inactive", {
-						advisor: config.name,
-					});
+					if (emitWarnings) {
+						logger.debug("advisor enabled but no model assigned to the 'advisor' role; advisor inactive", {
+							advisor: config.name,
+						});
+					}
 					continue;
 				}
 				model = sel.model;
 				thinkingLevel = concreteThinkingLevel(sel.thinkingLevel);
 			}
-			const advisorModel = model;
-			const advisorName = config.name;
 			const advisorThinkingLevel = thinkingLevel ?? ThinkingLevel.Medium;
+			descriptors.push({
+				config,
+				name: config.name,
+				slug,
+				model,
+				thinkingLevel: advisorThinkingLevel,
+				signature: this.#advisorRuntimeSignature(config, slug, model, advisorThinkingLevel),
+			});
+		}
+		return descriptors;
+	}
+
+	#advisorRuntimeSignature(config: AdvisorConfig, slug: string, model: Model, thinkingLevel: ThinkingLevel): string {
+		const tools = config.tools?.length ? config.tools.join("\u001e") : "";
+		const instructions = config.instructions?.trim() ?? "";
+		return [config.name, slug, model.provider, model.id, thinkingLevel, tools, instructions].join("\u001f");
+	}
+
+	#advisorRuntimeMatchesCurrentConfig(): boolean {
+		const descriptors = this.#resolveAdvisorRuntimeDescriptors(false);
+		if (descriptors.length !== this.#advisors.length) return false;
+		for (let i = 0; i < descriptors.length; i++) {
+			if (descriptors[i].signature !== this.#advisors[i].signature) return false;
+		}
+		return true;
+	}
+
+	#buildAdvisorRuntime(seedToCurrent = false): boolean {
+		if (this.#isDisposed) return false;
+		if (this.#advisors.length > 0) return true;
+		if (!this.#advisorEnabled) return false;
+		if (this.#agentKind !== "main" && !this.settings.get("advisor.subagents")) return false;
+
+		const descriptors = this.#resolveAdvisorRuntimeDescriptors(true);
+
+		// Advisor service tier (`tier.advisor`): "none" (default) runs the advisor
+		// on standard processing; "inherit" tracks the session's live per-family
+		// tiers per request (like the main agent, including /fast toggles); a
+		// concrete value is broadcast across families and applied to the advisor
+		// model's family. One value for all advisors.
+		const advisorTierSetting = this.settings.get("tier.advisor");
+		const advisorTierMap =
+			advisorTierSetting === "inherit"
+				? undefined
+				: serviceTierForAllFamilies(serviceTierSettingToTier(advisorTierSetting));
+		const advisorServiceTierResolver = (model: Model): ServiceTier | undefined =>
+			advisorTierSetting === "inherit"
+				? this.#effectiveServiceTier(model)
+				: resolveModelServiceTier(advisorTierMap, model);
+
+		for (const descriptor of descriptors) {
+			const {
+				config,
+				slug,
+				model: advisorModel,
+				name: advisorName,
+				thinkingLevel: advisorThinkingLevel,
+				signature,
+			} = descriptor;
 
 			const emissionGuard = new AdvisorEmissionGuard();
 			const adviseTool = new AdviseTool((note, severity) => this.#routeAdvice(advisorRef, note, severity));
@@ -2435,6 +2507,7 @@ export class AgentSession {
 				recorderClosed: Promise.resolve(),
 				model: advisorModel,
 				thinkingLevel: advisorThinkingLevel,
+				signature,
 			};
 			this.#attachAdvisorRecorderFeed(advisorRef);
 			if (seedToCurrent) runtime.seedTo(this.agent.state.messages.length);
@@ -2521,6 +2594,20 @@ export class AgentSession {
 			return;
 		}
 		this.#recordAdvisorInterruptDelivered();
+		if (this.#planModeState?.enabled) {
+			// Plan mode: record advice visibly in context but never wake an
+			// autonomous turn — only user-driven turns converge on ask/resolve.
+			this.#preserveAdvisorCard({
+				role: "custom",
+				customType: "advisor",
+				content,
+				display: true,
+				attribution: "agent",
+				details,
+				timestamp: Date.now(),
+			});
+			return;
+		}
 		void this.sendCustomMessage(
 			{ customType: "advisor", content, display: true, attribution: "agent", details },
 			{ deliverAs: "steer", triggerTurn: true },
@@ -2943,6 +3030,26 @@ export class AgentSession {
 		if (!this.#agentId) return;
 		const manager = this.#asyncJobManager;
 		manager?.cancelAll({ ownerId: this.#agentId });
+	}
+
+	/**
+	 * True when a background async job owned by this agent is still running with
+	 * an unsuppressed delivery, or a finished job's delivery is still queued or
+	 * in flight. Either way the async-result follow-up will re-wake the loop, so
+	 * a settle observed now is a scheduling pause rather than a terminal stop:
+	 * stop-time passes (todo reminder, session_stop hooks) defer to the settle
+	 * reached once the session is fully idle. Suppressed deliveries
+	 * (acknowledged, or watched by an in-flight `job` poll) never wake the loop,
+	 * so they don't count.
+	 */
+	#hasPendingAsyncWake(): boolean {
+		const manager = this.#asyncJobManager;
+		if (!manager) return false;
+		const ownerFilter = this.#agentId ? { ownerId: this.#agentId } : undefined;
+		return (
+			manager.getRunningJobs(ownerFilter).some(job => !manager.isDeliverySuppressed(job.id)) ||
+			manager.hasPendingDeliveries(ownerFilter)
+		);
 	}
 
 	// =========================================================================
@@ -3421,6 +3528,11 @@ export class AgentSession {
 			} else {
 				await this.#goalRuntime.onToolCompleted(event.toolName);
 			}
+			this.#planModeReminderAwaitingProgress = false;
+			if (this.#isPlanDecisionTool(event.toolName)) {
+				this.#planModeReminderCount = 0;
+				this.#planModeReminderAwaitingProgress = false;
+			}
 		}
 		if (event.type === "tool_execution_end" && event.toolName === "yield" && !event.isError) {
 			this.#lastSuccessfulYieldToolCallId = event.toolCallId;
@@ -3843,11 +3955,25 @@ export class AgentSession {
 					await emitAgentEndNotification();
 					return;
 				}
+				const planModeContinuationScheduled = await this.#enforcePlanModeDecisionAtSettle();
+				if (planModeContinuationScheduled) {
+					await emitAgentEndNotification();
+					return;
+				}
 				const todoContinuationScheduled = await this.#checkTodoCompletion();
 				if (todoContinuationScheduled) {
 					await emitAgentEndNotification();
 					return;
 				}
+			}
+			// A pending async wake means this settle is a scheduling pause, not
+			// the terminal stop: the async-result delivery continues the loop and
+			// the real stop settles later. Defer the session_stop hook pass until
+			// the session is fully idle (the todo reminder above defers the same
+			// way inside #checkTodoCompletion).
+			if (this.#hasPendingAsyncWake()) {
+				await emitAgentEndNotification();
+				return;
 			}
 			await this.#emitSessionStopEvent(settledMessages, msg);
 			await emitAgentEndNotification();
@@ -6684,6 +6810,12 @@ export class AgentSession {
 		if (state?.enabled) {
 			this.#planReferenceSent = false;
 			this.#planReferencePath = state.planFilePath;
+		} else {
+			this.#planModeReminderCount = 0;
+			this.#planModeReminderAwaitingProgress = false;
+			// Drop any unconsumed forced decision so a post-plan execution turn
+			// does not inherit a stale `required` tool choice.
+			this.#toolChoiceQueue.removeByLabel("plan-mode-decision");
 		}
 	}
 
@@ -6948,15 +7080,30 @@ export class AgentSession {
 		return {
 			role: "custom",
 			customType: "goal-mode-context",
-			content: todoContext ? `${content}\n\n${todoContext}` : content,
+			content: prompt.render(goalModeContextPrompt, { goalContext: content, todoContext }),
 			display: false,
 			attribution: "agent",
 			timestamp: Date.now(),
 		};
 	}
 
+	#sanitizeGoalTodoText(text: string): string {
+		return escapeXmlText(text)
+			.replace(/\r\n/g, "\\n")
+			.replace(/\r/g, "\\r")
+			.replace(/\n/g, "\\n")
+			.replace(/\t/g, "\\t")
+			.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u2028\u2029]/g, " ");
+	}
+
 	#buildGoalTodoContext(): string | undefined {
 		if (!this.settings.get("todo.enabled")) return undefined;
+		const activeToolNames = this.getActiveToolNames();
+		const canCallTodoTool = activeToolNames.includes("todo");
+		const canDiscoverTodoTool =
+			!canCallTodoTool && this.getDiscoverableTools({ source: "builtin" }).some(tool => tool.name === "todo");
+		const canActivateTodoTool = canDiscoverTodoTool && activeToolNames.includes("search_tool_bm25");
+		if (!canCallTodoTool && !canDiscoverTodoTool) return undefined;
 		const phases = this.getTodoPhases().filter(phase => phase.tasks.length > 0);
 		if (phases.length === 0) return undefined;
 
@@ -6964,7 +7111,7 @@ export class AgentSession {
 		let closed = 0;
 		let open = 0;
 		const promptPhases = phases.map(phase => ({
-			name: phase.name,
+			name: this.#sanitizeGoalTodoText(phase.name),
 			tasks: phase.tasks.map(task => {
 				total++;
 				if (task.status === "completed" || task.status === "abandoned") {
@@ -6972,11 +7119,13 @@ export class AgentSession {
 				} else {
 					open++;
 				}
-				return { content: task.content, status: task.status };
+				return { content: this.#sanitizeGoalTodoText(task.content), status: task.status };
 			}),
 		}));
 
 		return prompt.render(goalTodoContextPrompt, {
+			canCallTodoTool,
+			canActivateTodoTool,
 			closed: String(closed),
 			open: String(open),
 			phases: promptPhases,
@@ -7162,6 +7311,11 @@ export class AgentSession {
 		// Agent-initiated synthetic prompts (auto-continue, plan, reminders) do not.
 		if (options?.userInitiated ?? !options?.synthetic) {
 			this.#advisorAutoResumeSuppressed = false;
+			this.#planModeReminderCount = 0;
+			this.#planModeReminderAwaitingProgress = false;
+			// A user turn owns the next decision; drop a queued forced choice from
+			// a reminder continuation this prompt just preempted.
+			this.#toolChoiceQueue.removeByLabel("plan-mode-decision");
 		}
 
 		// If streaming, queue via steer() or followUp() based on option
@@ -7231,9 +7385,6 @@ export class AgentSession {
 			// Clean up residual eager-todo directive if the prompt never consumed it
 			// (e.g., compaction aborted, validation failed).
 			this.#toolChoiceQueue.removeByLabel("eager-todo");
-		}
-		if (!options?.synthetic) {
-			await this.#enforcePlanModeToolDecision();
 		}
 		return true;
 	}
@@ -8483,12 +8634,10 @@ export class AgentSession {
 	/**
 	 * Set model directly.
 	 * Validates that a credential source is configured (synchronously, without
-	 * refreshing OAuth or running command-backed key programs). The active
-	 * session switches by default; when `currentContextTokens` is provided and
-	 * exceeds the refreshed candidate's context window, the live switch is
-	 * skipped while role persistence still runs. Returns whether the active
-	 * model actually switched, computed against the refreshed metadata so
-	 * dynamic providers (e.g. llama.cpp) honor their post-load contextWindow.
+	 * refreshing OAuth or running command-backed key programs). Active switches
+	 * always take effect; if the current transcript is too large for the target
+	 * model, the next prompt's compaction/error path owns that recovery instead
+	 * of leaving the session pinned to the old model.
 	 * @throws Error if no API key available for the model
 	 */
 	async setModel(
@@ -8508,27 +8657,14 @@ export class AgentSession {
 
 		const targetModel = await this.#modelRegistry.refreshSelectedModelMetadata(model);
 
-		const currentContextTokens = options?.currentContextTokens ?? 0;
-		const targetContextWindow = targetModel.contextWindow ?? 0;
-		const switched = !(
-			currentContextTokens > 0 &&
-			targetContextWindow > 0 &&
-			currentContextTokens > targetContextWindow
-		);
-
-		if (switched) {
-			this.#clearActiveRetryFallback();
-			this.#setModelWithProviderSessionReset(targetModel);
-			this.sessionManager.appendModelChange(`${targetModel.provider}/${targetModel.id}`, role);
-		}
+		this.#clearActiveRetryFallback();
+		this.#setModelWithProviderSessionReset(targetModel);
+		this.sessionManager.appendModelChange(`${targetModel.provider}/${targetModel.id}`, role);
 		if (options?.persist) {
 			this.settings.setModelRole(
 				role,
 				this.#formatRoleModelValue(role, targetModel, options.selector, options.thinkingLevel),
 			);
-		}
-		if (!switched) {
-			return { switched: false };
 		}
 		this.settings.getStorage()?.recordModelUsage(`${targetModel.provider}/${targetModel.id}`);
 
@@ -10062,6 +10198,48 @@ export class AgentSession {
 			}
 			return COMPACTION_CHECK_NONE;
 		}
+		// A context promotion can land while the failing call is already in
+		// flight (or on a run whose loop predates the switch): the overflow
+		// error then arrives stamped with the pre-promotion model while
+		// `this.model` is already the promoted target. The sameModel guard
+		// above deliberately ignores stale foreign-model errors, but this
+		// state is not stale — recover exactly like the promotion path:
+		// drop the dead turn and retry on the already-promoted model. Gated
+		// narrowly on "current model IS the failed model's promotion target
+		// with a strictly larger window" so genuinely stale errors from
+		// old user-switched models keep surfacing untouched.
+		if (
+			!sameModel &&
+			autoContinue &&
+			!errorIsFromBeforeCompaction &&
+			assistantMessage.stopReason === "error" &&
+			this.model &&
+			contextWindow > 0 &&
+			this.settings.getGroup("contextPromotion").enabled
+		) {
+			const failedModel = this.#modelRegistry.find(assistantMessage.provider, assistantMessage.model);
+			const failedWindow = failedModel?.contextWindow ?? 0;
+			const promotionTarget = failedModel
+				? this.#resolveContextPromotionConfiguredTarget(failedModel, this.#modelRegistry.getAvailable())
+				: undefined;
+			if (
+				failedModel &&
+				failedWindow > 0 &&
+				contextWindow > failedWindow &&
+				promotionTarget &&
+				modelsAreEqual(promotionTarget, this.model) &&
+				AIError.isContextOverflow(assistantMessage, failedWindow)
+			) {
+				this.#removeAssistantMessageFromActiveContext(assistantMessage);
+				await this.#dropPersistedAssistantTurn(assistantMessage);
+				logger.debug("Overflow on pre-promotion model; retrying on promoted model", {
+					failed: `${assistantMessage.provider}/${assistantMessage.model}`,
+					current: `${this.model.provider}/${this.model.id}`,
+				});
+				this.#scheduleAgentContinue({ delayMs: 100, generation });
+				return COMPACTION_CHECK_CONTINUATION;
+			}
+		}
 
 		// Case 3: Output-side incomplete — `response.incomplete` from OpenAI Responses
 		// (and Codex) maps to stopReason === "length". The model burned its
@@ -10548,41 +10726,72 @@ export class AgentSession {
 		this.#checkpointState = undefined;
 		this.#pendingRewindReport = undefined;
 	}
-	async #enforcePlanModeToolDecision(): Promise<void> {
+	#isPlanDecisionTool(name: string): boolean {
+		return PLAN_DECISION_TOOLS.has(name);
+	}
+
+	async #enforcePlanModeDecisionAtSettle(): Promise<boolean> {
 		if (!this.#planModeState?.enabled) {
-			return;
+			return false;
 		}
 		const assistantMessage = this.#findLastAssistantMessage();
 		if (!assistantMessage) {
-			return;
+			return false;
 		}
 		if (assistantMessage.stopReason === "error" || assistantMessage.stopReason === "aborted") {
-			return;
+			return false;
 		}
 
-		const calledRequiredTool = assistantMessage.content.some(
-			content => content.type === "toolCall" && (content.name === "ask" || content.name === "resolve"),
+		const calledDecisionTool = assistantMessage.content.some(
+			content => content.type === "toolCall" && this.#isPlanDecisionTool(content.name),
 		);
-		if (calledRequiredTool) {
-			return;
+		if (calledDecisionTool) {
+			this.#planModeReminderCount = 0;
+			this.#planModeReminderAwaitingProgress = false;
+			return false;
+		}
+
+		const hasToolCall = assistantMessage.content.some(content => content.type === "toolCall");
+		if (hasToolCall) {
+			return false;
+		}
+		if (this.#planModeReminderAwaitingProgress) {
+			return false;
+		}
+		if (this.#planModeReminderCount >= PLAN_MODE_REMINDER_MAX) {
+			logger.debug("Plan mode convergence: reminder cap reached; yielding to user");
+			return false;
 		}
 		const hasRequiredTools = this.#toolRegistry.has("ask") && this.#toolRegistry.has("resolve");
 		if (!hasRequiredTools) {
 			logger.warn("Plan mode enforcement skipped because ask/resolve tools are unavailable", {
 				activeToolNames: this.agent.state.tools.map(tool => tool.name),
 			});
-			return;
+			return false;
 		}
 
+		this.#planModeReminderCount++;
+		this.#planModeReminderAwaitingProgress = true;
+		this.#toolChoiceQueue.pushOnce("required", { label: "plan-mode-decision" });
 		const reminder = prompt.render(planModeToolDecisionReminderPrompt, {
 			askToolName: "ask",
 		});
+		const reminderMessage: Message = {
+			role: "developer",
+			content: [{ type: "text", text: reminder }],
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
 
-		await this.prompt(reminder, {
-			synthetic: true,
-			expandPromptTemplates: false,
-			toolChoice: "required",
+		this.agent.appendMessage(reminderMessage);
+		this.sessionManager.appendMessage(reminderMessage);
+		this.#scheduleAgentContinue({
+			generation: this.#promptGeneration,
+			// If the continuation never runs (new prompt, dispose, compaction,
+			// handoff), the forced choice must not leak onto an unrelated turn.
+			onSkip: () => this.#toolChoiceQueue.removeByLabel("plan-mode-decision"),
 		});
+		return true;
 	}
 
 	/**
@@ -10731,6 +10940,13 @@ export class AgentSession {
 			return false;
 		}
 
+		// Plan mode owns convergence via #enforcePlanModeDecisionAtSettle (remind →
+		// cap → yield). Todo reminders must not re-wake a turn the cap intends to
+		// yield to the user. The label is already consumed above, so no leak.
+		if (this.#planModeState?.enabled) {
+			return false;
+		}
+
 		// Suppress within a self-continuation chain: if the agent's last turn was driven by a
 		// prior reminder (and the agent took no tool-level action since), do not re-ping.
 		// The agent has already acknowledged; further escalation just wastes context and
@@ -10778,6 +10994,18 @@ export class AgentSession {
 		if (incomplete.length === 0) {
 			this.#todoReminderCount = 0;
 			this.#todoReminderAwaitingProgress = false;
+			return false;
+		}
+
+		// Background async jobs (bash/task) owned by this agent re-wake the loop
+		// when they complete: the result delivery enqueues an async-result
+		// follow-up that continues the run, and todos are re-evaluated at that
+		// settle. A stop with such a job in flight is a scheduling pause, not
+		// abandonment — stay silent instead of nagging.
+		if (this.#hasPendingAsyncWake()) {
+			logger.debug("Todo completion: async jobs in flight will re-wake the loop; skipping reminder", {
+				incomplete: incomplete.length,
+			});
 			return false;
 		}
 
@@ -13676,24 +13904,32 @@ export class AgentSession {
 	 *
 	 * - mid-turn → queued on the aside channel and folded in at the next step
 	 *   boundary (non-interrupting, like async-result deliveries) → "injected";
+	 * - idle in plan mode → appended into context without waking an autonomous
+	 *   turn (convergence stays user-driven) → "injected";
 	 * - idle → starts a real turn with the message so the recipient wakes
 	 *   → "woken".
 	 *
 	 * Never blocks on the recipient's turn: the wake turn is fire-and-forget.
 	 *
-	 * When the sender expects a reply (`send await:true`) and this session is
-	 * mid-turn with async execution disabled, the next step boundary may be
-	 * gated on the sender's own batch finishing (blocking task spawns), so a
-	 * real reply turn can never happen in time. In that case an ephemeral
-	 * side-channel auto-reply is generated from the current context (the old
-	 * `respondAsBackground` path) and sent back over the bus on this agent's
-	 * behalf.
+	 * When the sender expects a reply (`send await:true`) and this session
+	 * cannot produce a real reply turn in time — mid-turn with async execution
+	 * disabled (the next step boundary may be gated on the sender's own batch
+	 * finishing), or idle in plan mode (wake turns are suppressed) — an
+	 * ephemeral side-channel auto-reply is generated from the current context
+	 * (the old `respondAsBackground` path) and sent back over the bus on this
+	 * agent's behalf.
 	 */
 	async deliverIrcMessage(msg: IrcMessage, opts?: { expectsReply?: boolean }): Promise<"injected" | "woken"> {
 		if (this.#isDisposed) {
 			throw new Error("Recipient session is disposed.");
 		}
-		const autoReply = (opts?.expectsReply ?? false) && this.isStreaming && !this.settings.get("async.enabled");
+		// Auto-reply eligibility: the sender is blocked on an answer and this
+		// session cannot produce a real reply turn in time — either mid-turn with
+		// async execution disabled (no step boundary until the sender's own batch
+		// ends), or idle in plan mode (autonomous wake turns are suppressed).
+		const planModeIdle = !this.isStreaming && this.#planModeState?.enabled === true;
+		const autoReply =
+			(opts?.expectsReply ?? false) && ((this.isStreaming && !this.settings.get("async.enabled")) || planModeIdle);
 		const record: CustomMessage = {
 			role: "custom",
 			customType: "irc:incoming",
@@ -13723,6 +13959,19 @@ export class AgentSession {
 			} else {
 				this.#pendingIrcInterrupts.push(record);
 			}
+			if (autoReply) void this.#runIrcAutoReply(msg);
+			return "injected";
+		}
+		// Plan mode: record into context but do not wake an autonomous turn.
+		if (this.#planModeState?.enabled) {
+			this.agent.appendMessage(record);
+			this.sessionManager.appendCustomMessageEntry(
+				record.customType,
+				record.content,
+				record.display,
+				record.details,
+				record.attribution ?? "agent",
+			);
 			if (autoReply) void this.#runIrcAutoReply(msg);
 			return "injected";
 		}
@@ -15187,6 +15436,7 @@ export class AgentSession {
 	setAdvisorEnabled(enabled: boolean): boolean {
 		this.#advisorEnabled = enabled;
 		if (enabled) {
+			if (this.#advisors.length > 0 && !this.#advisorRuntimeMatchesCurrentConfig()) this.#stopAdvisorRuntime();
 			return this.#buildAdvisorRuntime(true);
 		}
 		this.#stopAdvisorRuntime();

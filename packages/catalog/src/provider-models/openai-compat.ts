@@ -1283,6 +1283,7 @@ export function zhipuCodingPlanModelManagerOptions(
 	const baseUrl = config?.baseUrl ?? "https://open.bigmodel.cn/api/coding/paas/v4";
 	return {
 		providerId: "zhipu-coding-plan",
+		dynamicModelsAuthoritative: true,
 		...(apiKey && {
 			fetchDynamicModels: () =>
 				fetchOpenAICompatibleModels({
@@ -2035,7 +2036,11 @@ function normalizeZenMuxOpenAiBaseUrl(baseUrl?: string): string {
 	if (!value) {
 		return ZENMUX_OPENAI_BASE_URL;
 	}
-	return value.endsWith("/") ? value.slice(0, -1) : value;
+	const normalized = value.endsWith("/") ? value.slice(0, -1) : value;
+	if (normalized.endsWith("/api/anthropic")) {
+		return normalized.replace("/api/anthropic", "/api/v1");
+	}
+	return normalized;
 }
 
 function toZenMuxAnthropicBaseUrl(openAiBaseUrl: string): string {
@@ -2103,37 +2108,35 @@ export function zenmuxModelManagerOptions(config?: ZenMuxModelManagerConfig): Mo
 	const anthropicBaseUrl = toZenMuxAnthropicBaseUrl(openAiBaseUrl);
 	return {
 		providerId: "zenmux",
-		...(apiKey && {
-			fetchDynamicModels: () =>
-				fetchOpenAICompatibleModels<Api>({
-					api: "openai-completions",
-					provider: "zenmux",
-					baseUrl: openAiBaseUrl,
-					apiKey,
-					mapModel: (entry, defaults) => {
-						const pricings = isRecord(entry.pricings) ? entry.pricings : undefined;
-						const capabilities = isRecord(entry.capabilities) ? entry.capabilities : undefined;
-						const isAnthropicModel = isZenMuxAnthropicModel(entry, defaults.id);
-						return {
-							...defaults,
-							name: toModelName(entry.display_name, defaults.name),
-							api: isAnthropicModel ? "anthropic-messages" : "openai-completions",
-							baseUrl: isAnthropicModel ? anthropicBaseUrl : openAiBaseUrl,
-							reasoning: capabilities?.reasoning === true || defaults.reasoning,
-							input: toInputCapabilities(entry.input_modalities),
-							cost: {
-								input: getZenMuxPricingValue(pricings, "prompt"),
-								output: getZenMuxPricingValue(pricings, "completion"),
-								cacheRead: getZenMuxPricingValue(pricings, "input_cache_read"),
-								cacheWrite: getZenMuxCacheWritePrice(pricings),
-							},
-							contextWindow: toPositiveNumber(entry.context_length, defaults.contextWindow),
-							maxTokens: toPositiveNumber(entry.max_completion_tokens, defaults.maxTokens),
-						};
-					},
-					fetch: config?.fetch,
-				}),
-		}),
+		fetchDynamicModels: () =>
+			fetchOpenAICompatibleModels<Api>({
+				api: "openai-completions",
+				provider: "zenmux",
+				baseUrl: openAiBaseUrl,
+				apiKey,
+				mapModel: (entry, defaults) => {
+					const pricings = isRecord(entry.pricings) ? entry.pricings : undefined;
+					const capabilities = isRecord(entry.capabilities) ? entry.capabilities : undefined;
+					const isAnthropicModel = isZenMuxAnthropicModel(entry, defaults.id);
+					return {
+						...defaults,
+						name: toModelName(entry.display_name, defaults.name),
+						api: isAnthropicModel ? "anthropic-messages" : "openai-completions",
+						baseUrl: isAnthropicModel ? anthropicBaseUrl : openAiBaseUrl,
+						reasoning: capabilities?.reasoning === true || defaults.reasoning,
+						input: toInputCapabilities(entry.input_modalities),
+						cost: {
+							input: getZenMuxPricingValue(pricings, "prompt"),
+							output: getZenMuxPricingValue(pricings, "completion"),
+							cacheRead: getZenMuxPricingValue(pricings, "input_cache_read"),
+							cacheWrite: getZenMuxCacheWritePrice(pricings),
+						},
+						contextWindow: toPositiveNumber(entry.context_length, defaults.contextWindow),
+						maxTokens: toPositiveNumber(entry.max_completion_tokens, defaults.maxTokens),
+					};
+				},
+				fetch: config?.fetch,
+			}),
 	};
 }
 
@@ -2545,6 +2548,103 @@ export function veniceModelManagerOptions(
 				},
 				fetch: config?.fetch,
 			}),
+	};
+}
+
+// ---------------------------------------------------------------------------
+// 14.5 Baseten
+// ---------------------------------------------------------------------------
+
+export interface BasetenModelManagerConfig {
+	apiKey?: string;
+	baseUrl?: string;
+	fetch?: FetchImpl;
+}
+
+export function basetenModelManagerOptions(
+	config?: BasetenModelManagerConfig,
+): ModelManagerOptions<"openai-completions"> {
+	const apiKey = config?.apiKey;
+	const baseUrl = config?.baseUrl ?? "https://inference.baseten.co/v1";
+	const references = createBundledReferenceMap<"openai-completions">("baseten");
+	return {
+		providerId: "baseten",
+		dynamicModelsAuthoritative: true,
+		...(apiKey && {
+			fetchDynamicModels: () =>
+				fetchOpenAICompatibleModels({
+					api: "openai-completions",
+					provider: "baseten",
+					baseUrl,
+					apiKey,
+					mapModel: (entry, defaults) => {
+						const reference = references.get(defaults.id);
+						const raw = entry as Record<string, unknown> & {
+							supported_features?: unknown;
+							input_modalities?: unknown;
+							pricing?: Record<string, unknown>;
+						};
+						const features = Array.isArray(raw.supported_features) ? raw.supported_features : [];
+						const modalities = Array.isArray(raw.input_modalities) ? raw.input_modalities : [];
+
+						const isBasetenNativeReasoning =
+							defaults.id === "openai/gpt-oss-120b" ||
+							defaults.id === "deepseek-ai/DeepSeek-V4-Pro" ||
+							defaults.id === "zai-org/GLM-5.2";
+						const reasoning =
+							isBasetenNativeReasoning &&
+							(features.includes("reasoning") || features.includes("reasoning_effort"));
+						const supportsTools = features.includes("tools") ? undefined : false;
+						const vision = modalities.includes("image") || (reference?.input.includes("image") ?? false);
+
+						const pricing = raw.pricing ?? {};
+						const cost = {
+							input: toPositiveNumber(pricing.prompt, 0) * 1_000_000,
+							output: toPositiveNumber(pricing.completion, 0) * 1_000_000,
+							cacheRead: toPositiveNumber(pricing.input_cache_read, 0) * 1_000_000,
+							cacheWrite: 0,
+						};
+
+						const contextWindow = toPositiveNumber(
+							raw.context_length,
+							reference?.contextWindow ?? defaults.contextWindow,
+						);
+						const maxTokens = toPositiveNumber(
+							raw.max_completion_tokens,
+							reference?.maxTokens ?? defaults.maxTokens,
+						);
+
+						const baseModel = mapWithBundledReference(entry, defaults, reference);
+
+						const isEffortReasoning = defaults.id === "openai/gpt-oss-120b" || defaults.id === "zai-org/GLM-5.2";
+						const thinking = isEffortReasoning
+							? {
+									mode: "effort" as const,
+									efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+									effortMap: {
+										minimal: "high",
+										low: "high",
+										medium: "high",
+										high: "high",
+										xhigh: "max",
+									},
+								}
+							: undefined;
+
+						return {
+							...baseModel,
+							reasoning,
+							input: vision ? ["text", "image"] : ["text"],
+							cost,
+							contextWindow,
+							maxTokens,
+							...(thinking ? { thinking } : {}),
+							...(supportsTools === false ? { supportsTools } : {}),
+						};
+					},
+					fetch: config?.fetch,
+				}),
+		}),
 	};
 }
 

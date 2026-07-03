@@ -29,13 +29,12 @@ interface DapEventWaiter {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
-
-async function writeMessage(sink: DapWriteSink, message: DapRequestMessage | DapResponseMessage): Promise<void> {
-	const content = JSON.stringify(message);
-	await sink.write(`Content-Length: ${Buffer.byteLength(content, "utf-8")}\r\n\r\n`);
-	await sink.write(content);
-	await sink.flush();
-}
+/**
+ * Hard cap on a single message write. A wedged adapter stdin used to hang the
+ * whole client forever; on hitting this cap the client disposes itself so the
+ * next request fails fast instead of piling more work onto a broken adapter.
+ */
+const WRITE_MESSAGE_TIMEOUT_MS = 30_000;
 
 function toErrorMessage(value: unknown): string {
 	if (value instanceof Error) return value.message;
@@ -65,6 +64,8 @@ export class DapClient {
 	#anyEventHandlers = new Set<DapEventHandler>();
 	#reverseRequestHandlers = new Map<string, DapReverseRequestHandler>();
 	#eventWaiters = new Set<DapEventWaiter>();
+	#adapterExited = false;
+	#pendingWriteExitRejectors = new Set<() => void>();
 
 	constructor(
 		adapter: DapResolvedAdapter,
@@ -78,6 +79,10 @@ export class DapClient {
 		this.#readable = options?.readable ?? (proc.stdout as ReadableStream<Uint8Array>);
 		this.#writeSink = options?.writeSink ?? proc.stdin;
 		this.#socket = options?.socket;
+		this.proc.exited.then(
+			() => this.#rejectPendingWritesForExit(),
+			() => this.#rejectPendingWritesForExit(),
+		);
 	}
 
 	static async spawn(options: DapSpawnOptions): Promise<DapClient> {
@@ -252,6 +257,12 @@ export class DapClient {
 			arguments: args,
 		};
 		const { promise, resolve, reject } = Promise.withResolvers<TBody>();
+		// Suppress "unhandled rejection" if the request timer or abort fires
+		// before the caller's `await` subscribes — e.g. while #writeMessage is
+		// still racing a wedged stdin flush. The caller's own `await` still
+		// receives the rejection normally; this handler is a passive guard.
+		promise.catch(() => {});
+
 		let timeout: NodeJS.Timeout | undefined;
 		const cleanup = () => {
 			if (timeout) clearTimeout(timeout);
@@ -285,13 +296,15 @@ export class DapClient {
 			},
 		});
 		this.#lastActivity = Date.now();
-		try {
-			await writeMessage(this.#writeSink, request);
-		} catch (error) {
+		// Fire the write in the background. Awaiting it here would let a wedged
+		// stdin flush block the caller's `timeoutMs`; if it fails, propagate the
+		// failure into `promise` — the timer or abort may still win the race.
+		void this.#writeMessage(request).catch(error => {
+			if (!this.#pendingRequests.has(requestSeq)) return;
 			this.#pendingRequests.delete(requestSeq);
 			cleanup();
-			throw error;
-		}
+			reject(error);
+		});
 		return promise;
 	}
 
@@ -305,7 +318,60 @@ export class DapClient {
 			...(message ? { message } : {}),
 			...(body !== undefined ? { body } : {}),
 		};
-		await writeMessage(this.#writeSink, response);
+		await this.#writeMessage(response);
+	}
+
+	/**
+	 * Framed write to the adapter, bounded by {@link WRITE_MESSAGE_TIMEOUT_MS}
+	 * and by adapter exit. Without this bound a wedged adapter stdin used to
+	 * hang the whole client forever. On timeout or exit-before-flush the client
+	 * disposes itself and rethrows.
+	 */
+	async #writeMessage(message: DapRequestMessage | DapResponseMessage): Promise<void> {
+		const content = JSON.stringify(message);
+		this.#writeSink.write(`Content-Length: ${Buffer.byteLength(content, "utf-8")}\r\n\r\n`);
+		this.#writeSink.write(content);
+		const flushResult = this.#writeSink.flush();
+		if (!(flushResult instanceof Promise)) return;
+
+		if (this.#adapterExited) {
+			throw new Error(`DAP adapter ${this.adapter.name} exited before write completed`);
+		}
+
+		const { promise: guardPromise, reject: guardReject, resolve: guardResolve } = Promise.withResolvers<void>();
+		const timer = setTimeout(
+			() =>
+				guardReject(
+					new Error(`DAP adapter ${this.adapter.name} write timed out after ${WRITE_MESSAGE_TIMEOUT_MS}ms`),
+				),
+			WRITE_MESSAGE_TIMEOUT_MS,
+		);
+		const rejectOnExit = () => {
+			guardReject(new Error(`DAP adapter ${this.adapter.name} exited before write completed`));
+		};
+		this.#pendingWriteExitRejectors.add(rejectOnExit);
+
+		try {
+			await Promise.race([flushResult, guardPromise]);
+		} catch (error) {
+			// The client is now known-broken. Kick off dispose in the background;
+			// callers will see subsequent sendRequest calls fail fast.
+			void this.dispose();
+			throw error;
+		} finally {
+			clearTimeout(timer);
+			this.#pendingWriteExitRejectors.delete(rejectOnExit);
+			// Release the guard so any late timeout callback becomes a no-op.
+			guardResolve();
+		}
+	}
+
+	#rejectPendingWritesForExit(): void {
+		this.#adapterExited = true;
+		for (const reject of this.#pendingWriteExitRejectors) {
+			reject();
+		}
+		this.#pendingWriteExitRejectors.clear();
 	}
 
 	async dispose(): Promise<void> {
