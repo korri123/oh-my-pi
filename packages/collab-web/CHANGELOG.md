@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed an issue where the workspace advertised a stale package version (15.11.7) instead of the current release version.
+
 ## [16.3.3] - 2026-07-02
 
 ### Fixed

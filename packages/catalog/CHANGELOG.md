@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed usage cost calculation to correctly account for provider orchestration token sidecars without misclassifying them as standard input, output, or cache tokens.
+
 ## [16.3.4] - 2026-07-03
 
 ### Added

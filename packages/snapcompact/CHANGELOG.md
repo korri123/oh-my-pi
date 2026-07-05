@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `resolveShapeForText(..., "auto")` to correctly select the `silver16-bw` shape for CJK-heavy transcript text while preserving explicit shape overrides.
+
 ## [16.2.8] - 2026-06-30
 
 ### Fixed
