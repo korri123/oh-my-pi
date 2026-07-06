@@ -5,6 +5,43 @@
 ### Fixed
 
 - Fixed `agent(prompt, agent="reviewer", schema=…)` (and any eval-bridge subagent whose caller-supplied output schema overrides an agent that prescribes its own incremental-`yield` labels) intermittently failing with `schema_violation: missing required fields`. The reviewer's prompt directs the model to `yield` under its native labels (`findings`, `overall_correctness`, `explanation`, `confidence`); when a caller overrode the schema with different fields, those labels were silently accepted, then finalization assembled an object missing every required override field. Two fixes: (1) under a closed override schema (`additionalProperties: false`), the `yield` tool now rejects an incremental section whose label is not a declared property — with retry feedback naming the offending label and listing the valid ones — instead of accumulating a doomed object; (2) agent bodies can fence native-schema-only guidance in `<!--omit-when-schema-override-->` regions that are stripped when a caller overrides the schema, and the subagent prompt marks the caller's schema authoritative. Open schemas keep free-form section labels loose.
+## [16.3.10] - 2026-07-06
+
+### Changed
+
+- Limited subagent HUD display to 8 items with a summary for additional running subagents
+- Improved TUI performance by coalescing agent registry and observer UI updates
+
+### Fixed
+
+- Fixed high-subagent sessions overwhelming the TUI by bounding the running-subagent HUD and coalescing subagent progress repaint bursts.
+- Fixed browser run cleanup crashing or wedging the whole omp session: run-end and tab-close aborts could reject fire-and-forget `wait()`/facade/tab promises with no consumer, and the global unhandled-rejection handler then exited the process, killing every subagent sharing it. Run-scoped promises are now observed at creation and routine browser teardown aborts are downgraded to log lines ([#4499](https://github.com/can1357/oh-my-pi/issues/4499), [#4672](https://github.com/can1357/oh-my-pi/issues/4672)).
+- Reduced CPU use while many task subagents stream progress by disabling the obsolete task partial-result spinner repaint loop ([#4424](https://github.com/can1357/oh-my-pi/issues/4424)).
+- Capped collapsed nested subagent trees at the same per-level agent limit as top-level task rendering (failures prioritized, elided rows summarized), so deep many-subagent sessions no longer render unbounded progress trees on every repaint.
+- Fixed skill card headers to render a single space between the `skill` tag and skill name ([#4662](https://github.com/can1357/oh-my-pi/issues/4662)).
+- Fixed `get_session_stats` RPC responses to include context-window usage so RPC clients can render context meters.
+- Fixed startup of cached llama.cpp vision models so the initial default/restored model refreshes `/props` metadata before the session exposes it as text-only.
+- Fixed IRC-woken yielded subagents skipping empty-stop retry because stale yield-termination state carried into the wake turn ([#4658](https://github.com/can1357/oh-my-pi/issues/4658)).
+- Fixed `irc wait` skipping replies that arrived between wait calls by draining pending IRC asides before honoring queued-interrupt aborts ([#4657](https://github.com/can1357/oh-my-pi/issues/4657)).
+
+## [16.3.9] - 2026-07-06
+
+### Added
+
+- Added a `--file` flag to the `say` command to read input text directly from files.
+- Enabled streaming text synthesis in the `say` command for gapless, long-form audio generation.
+- Added voice selection validation to the `say` command.
+
+### Changed
+
+- Improved the `say` command to display the segment count and total duration upon completion.
+
+### Fixed
+
+- Fixed an issue where local llama.cpp vision models remained text-only after a model refresh, ensuring they are correctly recognized as image-capable when configured as the default or vision role.
+- Fixed `omp commit` split plans aborting when lock files (such as `bun.lockb`) were staged alongside their manifests by correctly pairing lock files with their corresponding commit groups and properly handling binary files during split execution.
+- Fixed skill loading to ensure that disabling a higher-priority provider does not drop same-named skills from enabled lower-priority providers.
+
 ## [16.3.8] - 2026-07-05
 
 ### Fixed
