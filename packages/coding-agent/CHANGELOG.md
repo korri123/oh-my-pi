@@ -5,6 +5,18 @@
 ### Fixed
 
 - Fixed `agent(prompt, agent="reviewer", schema=…)` (and any eval-bridge subagent whose caller-supplied output schema overrides an agent that prescribes its own incremental-`yield` labels) intermittently failing with `schema_violation: missing required fields`. The reviewer's prompt directs the model to `yield` under its native labels (`findings`, `overall_correctness`, `explanation`, `confidence`); when a caller overrode the schema with different fields, those labels were silently accepted, then finalization assembled an object missing every required override field. Two fixes: (1) under a closed override schema (`additionalProperties: false`), the `yield` tool now rejects an incremental section whose label is not a declared property — with retry feedback naming the offending label and listing the valid ones — instead of accumulating a doomed object; (2) agent bodies can fence native-schema-only guidance in `<!--omit-when-schema-override-->` regions that are stripped when a caller overrides the schema, and the subagent prompt marks the caller's schema authoritative. Open schemas keep free-form section labels loose.
+## [16.3.11] - 2026-07-06
+
+### Changed
+
+- Improved session title generation reliability by moving to marker-based parsing for all models
+
+### Fixed
+
+- Fixed session titles occasionally showing raw `{"title": "..."}` JSON. Online title generation now always uses the `<title>...</title>` marker prompt instead of a forced `set_title` tool call — hosts that ignored or rejected forced `tool_choice` echoed the prompt's JSON example verbatim as the title — and JSON-shaped responses (bare, code-fenced, marker-wrapped, or truncated) are unwrapped to the bare title.
+- Fixed Linux startup prompt construction to read the CPU model from `/proc/cpuinfo` instead of `os.cpus()`, avoiding per-core sysfs frequency probes on many-core hosts ([#4712](https://github.com/can1357/oh-my-pi/issues/4712)).
+- Fixed llama.cpp model discovery to honor per-model `architecture.input_modalities` from `/v1/models`, so router presets that advertise image input are no longer treated as text-only ([#4719](https://github.com/can1357/oh-my-pi/issues/4719)).
+
 ## [16.3.10] - 2026-07-06
 
 ### Changed
