@@ -2,18 +2,24 @@
 
 ## [Unreleased]
 
+## [16.4.0] - 2026-07-10
+
+### Breaking Changes
+
+- Redesigned reasoning effort ladders to be wire-exact, removing the shifted five-tier effort mapping. Models now expose exactly the effort tiers their upstream APIs accept, mapped 1:1. Removed SHIFTED_FIVE_TIER_EFFORT_MAP, ANTHROPIC_ADAPTIVE_EFFORT_MAP_4_TIER, and per-host xhigh-to-max alias maps. Selecting an unsupported tier now automatically clamps down via clampThinkingLevelForModel. Devin effort routing is now mapped 1:1 onto per-tier siblings.
+
 ### Added
 
-- Added Grok 4.5 model family
-- Added support for Dolphin Mistral 24b Venice Edition
-- Added GLM5.2-Fast model
-- Added Zenmux variants for GPT-5.6 (Luna, Sol, and Terra)
-
-- Added `useResponsesLite` to `Model`/`ModelSpec` and Codex discovery parsing of the upstream `use_responses_lite` flag; regenerated `models.json` marks the GPT-5.6 family (`sol`/`terra`/`luna` and their pro aliases) for the Responses Lite transport. Added the `x-openai-internal-codex-responses-lite` marker to `OPENAI_HEADERS`.
+- Added support for new models: Grok 4.5 family, Dolphin Mistral 24b Venice Edition, GLM5.2-Fast, and Zenmux variants for GPT-5.6 (Luna, Sol, and Terra).
+- Added Novita as a model provider, including public catalog discovery, pricing, limits, modality, reasoning, and tool metadata.
+- Added useResponsesLite to Model and ModelSpec to support the Responses Lite transport, enabled by default for the GPT-5.6 family.
+- Added Effort.Max ("max") as a first-class user-facing thinking level above xhigh.
 
 ### Changed
 
-- Updated costs and context windows for various models in the catalog
+- Enabled reasoning effort controls for Grok 4.5 and updated support flags for additional Grok variants
+- Standardized reasoning effort levels to use a wire-exact max tier across all model providers, including Devin routing and Ollama configurations.
+- Updated costs and context windows for various models in the catalog.
 
 ## [16.3.15] - 2026-07-09
 
