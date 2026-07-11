@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [16.4.4] - 2026-07-11
+
+### Fixed
+
+- Fixed fuzzyFind tie-breaking logic to prefer shallower paths first, preventing deeply nested matches from ranking above shallow ones on score ties.
+- Fixed macOS installation issues for pi-natives by statically linking PCRE2, removing the runtime dependency on Homebrew's dynamic libpcre2-8.0.dylib library.
+
+## [16.4.3] - 2026-07-11
+
+### Fixed
+
+- Optimized non-recursive glob patterns (e.g., `dir/*.json`) to prevent traversing entire subtrees, significantly improving performance and preventing timeouts when searching large directories.
+- Fixed native filesystem searches (`glob`, `grep`, and AST search/edit) incorrectly excluding explicitly rooted directories due to ancestor ignore rules.
+
 ## [16.3.13] - 2026-07-09
 
 ### Fixed
