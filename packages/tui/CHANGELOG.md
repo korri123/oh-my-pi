@@ -5,6 +5,16 @@
 ### Fixed
 
 - Fixed unmanaged macOS stderr writes (libmalloc/framework diagnostics) corrupting the viewport: `ProcessTerminal` now suppresses fd 2 via the pi-utils stderr guard while it owns the terminal and restores it in `stop()` and the emergency-restore path.
+## [16.4.5] - 2026-07-11
+
+### Added
+
+- Added `FuzzyText`, a prepared fuzzy-match handle that builds the search index once and matches many queries against it, optimizing performance for large corpora like session or transcript searches.
+
+### Fixed
+
+- Fixed an issue where the mid-prompt `/` autocomplete popup lingered indefinitely on non-path and non-skill tokens. Autocomplete matching is now properly gated to explicit skill namespaces, queries, and prefixes, preventing stale popups from incorrectly rewriting input on Tab or Enter.
+- Fixed idle Loader animation driving the full TUI render pipeline on every spinner tick by directly rewriting the Loader's visible rows when geometry is unchanged, reducing idle render work while preserving fallback repaint paths ([#5192](https://github.com/can1357/oh-my-pi/issues/5192)).
 
 ## [16.4.1] - 2026-07-10
 

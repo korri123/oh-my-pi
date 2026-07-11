@@ -6,21 +6,38 @@
 
 - Fixed macOS runtime diagnostics (e.g. `MallocStackLogging: can't turn off malloc stack logging because it was not enabled`) written directly to fd 2 by libmalloc painting into the TUI viewport. While the TUI owns the terminal, stderr is now redirected to the omp log file and restored at every ownership handoff (external editor, Ctrl+Z suspend, shutdown, crash restore); fatal crash reports still reach the real terminal. Mirrors [openai/codex#24459](https://github.com/openai/codex/pull/24459).
 - Fixed `agent(prompt, agent="reviewer", schema=…)` (and any eval-bridge subagent whose caller-supplied output schema overrides an agent that prescribes its own incremental-`yield` labels) intermittently failing with `schema_violation: missing required fields`. The reviewer's prompt directs the model to `yield` under its native labels (`findings`, `overall_correctness`, `explanation`, `confidence`); when a caller overrode the schema with different fields, those labels were silently accepted, then finalization assembled an object missing every required override field. Two fixes: (1) under a closed override schema (`additionalProperties: false`), the `yield` tool now rejects an incremental section whose label is not a declared property — with retry feedback naming the offending label and listing the valid ones — instead of accumulating a doomed object; (2) agent bodies can fence native-schema-only guidance in `<!--omit-when-schema-override-->` regions that are stripped when a caller overrides the schema, and the subagent prompt marks the caller's schema authoritative. Open schemas keep free-form section labels loose.
+## [16.4.5] - 2026-07-11
+
 ### Breaking Changes
 
-- Reworked the task tool wire schema: the top-level `agent` field moved into each task item as `agent` (so one call can mix agent types), `assignment` was renamed `task`, `id` was renamed `name`, and the `role` and `description` fields were removed. The one-line UI label previously supplied via `description` is now generated automatically from the `task` text by the tiny/title model.
+- Reworked the task tool wire schema: moved the top-level agent field into individual task items, renamed assignment to task and id to name, and removed the role and description fields. UI labels are now automatically generated from the task text.
 
 ### Added
 
-- Added `auto` as a valid `thinking-level` in agent frontmatter; the bundled `task` subagent now defaults to it. An explicit `:level` suffix on a resolved model pattern takes precedence over an agent-definition default.
+- Introduced a fullscreen, mouse-supported Model Hub (via /model) featuring a sidebar of scopes, metadata-aligned model tables, inline role/thinking assignment strips, custom role creation, quick-switch cycle editing, and manual provider refreshing.
+- Added a /pause command to freeze all active agents (main, subagents, and advisor) at their next safe step, allowing manual repository edits mid-run before resuming.
+- Added support for per-ID bulk conflict directives via write({ path: "conflict://*", content: "..." }) to resolve multiple conflicts in a single call.
+- Added auto as a valid thinking-level in agent frontmatter, which is now the default for the bundled task subagent.
+- Added rich, interactive, fixed-height ask dialogs featuring question tabs, option previews, notes, and multi-select toggles.
 
 ### Changed
 
-- Rewrote the task tool prompt for the new wire schema and to push callers toward the most specific agent type: read-only research is directed to `agent: "scout"`, and omitting `agent` is framed as an explicit decision that no listed specialist fits.
-- Task rendering now keeps the `⟨agent⟩` type badge on live progress and finished result rows (previously it vanished after the streaming call preview), and the Task header shows only the spawn count instead of repeating the per-item agent types.
+- Redesigned OAuth logins to run inside a cancellable dialog (aborted via Esc) rather than an inescapable pairing prompt.
+- Reworked the subagent soft request budget to gracefully steer child agents to wrap up and yield partial findings instead of silently terminating them, and raised the default budget to 200 requests.
+- Updated task rendering to retain the agent type badge on live progress and finished result rows.
+
 ### Fixed
 
+- Fixed issues where in-flight tool calls or task blocks would disappear from the chat during mid-turn transcript rebuilds or when background jobs settled.
+- Fixed mixed blocking and non-blocking task batches degrading all spawns to synchronous execution; execution mode is now correctly handled per item.
+- Fixed budget-stopped subagents becoming unreachable, allowing them to remain adopted and resumable via irc with full context.
+- Fixed code duplication in write conflict://<N> when models pasted lines adjacent to the marker block.
+- Fixed visible per-keystroke lag when searching in the /resume session picker by caching search targets and debouncing SQLite lookups.
+- Fixed compiled Linux binary extension loading failures related to bundled web-search header generation data paths.
+- Fixed job list and empty-poll snapshots returning empty output, ensuring running subagents without backing jobs are properly listed.
+- Fixed agents getting stuck waiting for messages from peers that have already stopped running.
 - Fixed compiled Linux binary extension loading when bundled web-search header generation cannot read `header-generator` data files from the build-time path. ([#5178](https://github.com/can1357/oh-my-pi/issues/5178))
+- Fixed plugin custom tool loading to skip and report invalid feature entries instead of crashing startup when a plugin dependency tree leaves one feature unresolved. ([#5189](https://github.com/can1357/oh-my-pi/issues/5189))
 
 ## [16.4.4] - 2026-07-11
 
