@@ -5,6 +5,18 @@
 ### Fixed
 
 - Fixed unmanaged macOS stderr writes (libmalloc/framework diagnostics) corrupting the viewport: `ProcessTerminal` now suppresses fd 2 via the pi-utils stderr guard while it owns the terminal and restores it in `stop()` and the emergency-restore path.
+## [16.4.7] - 2026-07-12
+
+### Fixed
+
+- Fixed keyboard navigation paying an extra frame of input latency after idle; the queue-drain grace now applies only to Ctrl+C and Escape double-press gestures.
+
+## [16.4.6] - 2026-07-12
+
+### Added
+
+- Added support for width-changing editor text decorators on standalone presentation lines, with decorated output safely truncated to the available content width.
+
 ## [16.4.5] - 2026-07-11
 
 ### Added
