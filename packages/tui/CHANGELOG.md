@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [16.5.1] - 2026-07-14
+
 ### Fixed
 
 - Fixed unmanaged macOS stderr writes (libmalloc/framework diagnostics) corrupting the viewport: `ProcessTerminal` now suppresses fd 2 via the pi-utils stderr guard while it owns the terminal and restores it in `stop()` and the emergency-restore path.
@@ -10,6 +12,11 @@
 - Fixed streamed diff code fences retaining unhighlighted rows in native scrollback when long transient blocks leave the viewport before finalization ([#5126](https://github.com/can1357/oh-my-pi/issues/5126)).
 - Fixed native Windows Terminal sessions missing mid-run light/dark theme changes when Mode 2031 appearance notifications are unavailable by polling OSC 11 only on that host path ([#5091](https://github.com/can1357/oh-my-pi/issues/5091)).
 - Hid empty HTML comment separators in Markdown-rendered TUI output instead of showing `<!-- -->` literally ([#4911](https://github.com/can1357/oh-my-pi/issues/4911)).
+- Optimized the Markdown rendering cache to prevent large documents from indefinitely occupying cache slots, improving memory usage and performance ([#4820](https://github.com/can1357/oh-my-pi/issues/4820)).
+- Fixed viewport corruption on macOS caused by unmanaged stderr writes (such as libmalloc or framework diagnostics) while the terminal is active.
+- Fixed an issue where streamed diff code fences retained unhighlighted rows in native scrollback when long transient blocks left the viewport before finalization ([#5126](https://github.com/can1357/oh-my-pi/issues/5126)).
+- Fixed native Windows Terminal sessions failing to detect mid-run light/dark theme changes when Mode 2031 appearance notifications are unavailable ([#5091](https://github.com/can1357/oh-my-pi/issues/5091)).
+- Hid empty HTML comment separators in Markdown-rendered TUI output instead of displaying them literally ([#4911](https://github.com/can1357/oh-my-pi/issues/4911)).
 
 ## [16.5.0] - 2026-07-13
 
