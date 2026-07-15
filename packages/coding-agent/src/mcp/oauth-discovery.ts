@@ -11,9 +11,21 @@ export interface OAuthEndpoints {
 	authorizationUrl: string;
 	tokenUrl: string;
 	clientId?: string;
+	/** Dynamic client registration endpoint advertised by the authorization server. */
+	registrationUrl?: string;
 	scopes?: string;
 	resource?: string;
-	registrationEndpoint?: string;
+}
+
+function readRegistrationUrl(metadata: Record<string, unknown>): string | undefined {
+	const value =
+		metadata.registration_endpoint ??
+		metadata.registrationEndpoint ??
+		metadata.registration_url ??
+		metadata.registrationUrl ??
+		metadata.registration_uri ??
+		metadata.registrationUri;
+	return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 
 export interface AuthDetectionResult {
@@ -103,10 +115,7 @@ export function extractOAuthEndpoints(error: Error): OAuthEndpoints | null {
 			(obj.resource_uri as string | undefined) ||
 			(obj.resourceUri as string | undefined);
 
-		const registrationEndpoint =
-			(obj.registration_endpoint as string | undefined) || (obj.registrationEndpoint as string | undefined);
-
-		return { authorizationUrl, tokenUrl, clientId, scopes, resource, registrationEndpoint };
+		return { authorizationUrl, tokenUrl, registrationUrl: readRegistrationUrl(obj), clientId, scopes, resource };
 	};
 
 	const clientIdFromAuthUrl = (authorizationUrl: string): string | undefined => {
@@ -179,6 +188,10 @@ export function extractOAuthEndpoints(error: Error): OAuthEndpoints | null {
 			return {
 				authorizationUrl,
 				tokenUrl,
+				registrationUrl:
+					challengeValues.get("registration_endpoint") ||
+					challengeValues.get("registration_url") ||
+					challengeValues.get("registration_uri"),
 				clientId: challengeValues.get("client_id") || clientIdFromAuthUrl(authorizationUrl),
 				scopes: challengeValues.get("scope") || challengeValues.get("scopes") || scopeFromAuthUrl(authorizationUrl),
 				resource,
@@ -416,12 +429,10 @@ export async function discoverOAuthEndpoints(
 	const findEndpoints = (metadata: Record<string, unknown>): OAuthEndpoints | null => {
 		if (metadata.authorization_endpoint && metadata.token_endpoint) {
 			const resource = typeof metadata.resource === "string" ? metadata.resource : protectedResource;
-			const registrationEndpoint =
-				typeof metadata.registration_endpoint === "string" ? metadata.registration_endpoint : undefined;
-
 			return {
 				authorizationUrl: String(metadata.authorization_endpoint),
 				tokenUrl: String(metadata.token_endpoint),
+				registrationUrl: readRegistrationUrl(metadata),
 				clientId:
 					typeof metadata.client_id === "string"
 						? metadata.client_id
@@ -434,7 +445,6 @@ export async function discoverOAuthEndpoints(
 									: undefined,
 				scopes: readMetadataScopes(metadata) ?? protectedScopes,
 				resource,
-				registrationEndpoint,
 			};
 		}
 
@@ -442,16 +452,10 @@ export async function discoverOAuthEndpoints(
 			const oauthData = (metadata.oauth || metadata.authorization || metadata.auth) as Record<string, unknown>;
 			if (typeof oauthData.authorization_url === "string" && typeof oauthData.token_url === "string") {
 				const resource = typeof oauthData.resource === "string" ? oauthData.resource : protectedResource;
-				const registrationEndpoint =
-					typeof oauthData.registration_endpoint === "string"
-						? oauthData.registration_endpoint
-						: typeof metadata.registration_endpoint === "string"
-							? metadata.registration_endpoint
-							: undefined;
-
 				return {
 					authorizationUrl: oauthData.authorization_url || String(oauthData.authorizationUrl),
 					tokenUrl: oauthData.token_url || String(oauthData.tokenUrl),
+					registrationUrl: readRegistrationUrl(oauthData) ?? readRegistrationUrl(metadata),
 					clientId:
 						typeof oauthData.client_id === "string"
 							? oauthData.client_id
@@ -464,7 +468,6 @@ export async function discoverOAuthEndpoints(
 										: undefined,
 					scopes: readMetadataScopes(oauthData) ?? protectedScopes,
 					resource,
-					registrationEndpoint,
 				};
 			}
 		}
@@ -507,7 +510,7 @@ export async function discoverOAuthEndpoints(
 						const issuerOk = requireIssuerMatch ? issuerMatchesBase(metadata.issuer, base.url) : true;
 						const endpoints = issuerOk ? findEndpoints(metadata) : null;
 						if (endpoints) {
-							if (endpoints.registrationEndpoint) {
+							if (endpoints.registrationUrl) {
 								return endpoints;
 							}
 							pathFallback ??= endpoints;
@@ -539,7 +542,7 @@ export async function discoverOAuthEndpoints(
 									protectedScopes,
 								});
 								if (discovered) {
-									if (discovered.registrationEndpoint) {
+									if (discovered.registrationUrl) {
 										return discovered;
 									}
 									pathFallback ??= discovered;

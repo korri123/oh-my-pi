@@ -277,6 +277,8 @@ export interface MCPOAuthConfig {
 	authorizationUrl: string;
 	/** Token endpoint URL */
 	tokenUrl: string;
+	/** Dynamic client registration endpoint advertised by the authorization server. */
+	registrationUrl?: string;
 	/** Client ID (optional when already embedded in authorization URL) */
 	clientId?: string;
 	/** Client secret (optional for PKCE flows) */
@@ -298,8 +300,6 @@ export interface MCPOAuthConfig {
 	callbackPath?: string;
 	/** MCP resource URI for RFC 8707 resource indicators */
 	resource?: string;
-	/** Dynamic Client Registration endpoint discovered from the authorization server metadata. */
-	registrationEndpoint?: string;
 	/**
 	 * True when `resource` was synthesized from the server URL fallback rather
 	 * than advertised by OAuth/protected-resource metadata. Fallback resources
@@ -563,7 +563,7 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 	 * accept the later authorize request for the same scope set.
 	 */
 	async #tryRegisterClient(redirectUri: string): Promise<void> {
-		const registrationEndpoint = this.config.registrationEndpoint ?? (await this.#resolveRegistrationEndpoint());
+		const registrationEndpoint = this.config.registrationUrl ?? (await this.#resolveRegistrationEndpoint());
 		if (!registrationEndpoint) return;
 
 		try {

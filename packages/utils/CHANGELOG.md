@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Batched complete SSE lines into one UTF-8 decode per source chunk, avoiding per-line decoder overhead during active response streaming. ([#5542](https://github.com/can1357/oh-my-pi/issues/5542))
+
+## [16.5.2] - 2026-07-14
+
+### Fixed
+
+- Improved CLI argument and flag validation error output to display a concise error message and command usage instead of a minified code frame.
+- Corrected required variadic positionals to render as `MODELS...` instead of `[MODELS]` in usage help.
+
 ## [16.5.1] - 2026-07-14
 
 ### Added
@@ -33,6 +44,9 @@
 ### Fixed
 
 - Fixed child shell environment filtering to drop launch-directory `.env.local` values that Bun auto-loaded before OMP starts command shells. ([#4723](https://github.com/can1357/oh-my-pi/issues/4723))
+### Fixed
+
+- Fixed `parseFrontmatter`'s malformed-YAML fallback corrupting sibling values: one unparseable line (e.g. `scope: "text","thinking"`) forced every value through a raw key/value split that kept literal quotes. Each value is now reparsed independently as YAML, falling back to the raw trimmed string only for the lines that genuinely don't parse ([#4796](https://github.com/can1357/oh-my-pi/issues/4796)).
 
 ## [16.3.10] - 2026-07-06
 

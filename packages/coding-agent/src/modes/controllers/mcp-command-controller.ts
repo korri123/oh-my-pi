@@ -14,6 +14,7 @@ import {
 	fetchResourceMetadataScopes,
 	loadAllMCPConfigs,
 	MCPManager,
+	type OAuthEndpoints,
 } from "../../mcp";
 import { connectToServer, disconnectServer, listTools } from "../../mcp/client";
 import {
@@ -603,9 +604,9 @@ export class MCPCommandController {
 									callbackPath: finalConfig.oauth?.callbackPath,
 									redirectUri: finalConfig.oauth?.redirectUri,
 									prompt: finalConfig.oauth?.prompt,
+									registrationUrl: oauth.registrationUrl,
 									serverUrl: finalConfig.url,
 									resource: oauthResource,
-									registrationEndpoint: oauth.registrationEndpoint,
 									stripSameOriginResource: oauthResourceIsFallback,
 								},
 							);
@@ -685,8 +686,8 @@ export class MCPCommandController {
 			redirectUri?: string;
 			prompt?: string;
 			serverUrl?: string;
+			registrationUrl?: string;
 			resource?: string;
-			registrationEndpoint?: string;
 			stripSameOriginResource?: boolean;
 			/**
 			 * External cancellation source: when this signal aborts, the in-flight
@@ -749,6 +750,7 @@ export class MCPCommandController {
 				{
 					authorizationUrl: authUrl,
 					tokenUrl: tokenUrl,
+					registrationUrl: opts?.registrationUrl,
 					clientId: resolvedClientId,
 					clientSecret: resolvedClientSecret,
 					scopes: scopes || undefined,
@@ -757,7 +759,6 @@ export class MCPCommandController {
 					callbackPort: opts?.callbackPort,
 					callbackPath: opts?.callbackPath,
 					resource: opts?.resource,
-					registrationEndpoint: opts?.registrationEndpoint,
 					stripSameOriginResource: opts?.stripSameOriginResource,
 				},
 				{
@@ -1041,14 +1042,7 @@ export class MCPCommandController {
 		return next;
 	}
 
-	async #resolveOAuthEndpointsFromServer(config: MCPServerConfig): Promise<{
-		authorizationUrl: string;
-		tokenUrl: string;
-		clientId?: string;
-		scopes?: string;
-		resource?: string;
-		registrationEndpoint?: string;
-	}> {
+	async #resolveOAuthEndpointsFromServer(config: MCPServerConfig): Promise<OAuthEndpoints> {
 		// Stdio servers manage credentials inside the child process; OMP's OAuth
 		// flow only applies to http/sse transports. Without this guard the
 		// unauthenticated preflight below spawns the child, which happily reuses
@@ -1743,9 +1737,9 @@ export class MCPCommandController {
 					callbackPath: found.config.oauth?.callbackPath,
 					redirectUri: found.config.oauth?.redirectUri,
 					prompt: found.config.oauth?.prompt,
+					registrationUrl: oauth.registrationUrl,
 					serverUrl,
 					resource: oauthResource,
-					registrationEndpoint: oauth.registrationEndpoint,
 					stripSameOriginResource: oauthResourceIsFallback,
 				},
 			);

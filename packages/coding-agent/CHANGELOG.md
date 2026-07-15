@@ -2,6 +2,83 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added per-agent prewalk for subagents: a `prewalk` frontmatter field (`true` = hand off to the default prewalk target, a string = custom target model pattern) and a `task.agentPrewalk` settings override toggled per agent from the `/agents` dashboard with `P`. The bundled generic `task` agent ships with prewalk enabled by default (skipped when the target resolves to the subagent's own starting model, and never armed for plan-mode spawns). Prewalk-armed subagents keep the normally parent-owned `todo` tool so the plan-nudge → todo → hand-off flow works, and the prewalk todo gate now keys on the active tool set instead of the registry so a deactivated todo tool can no longer stall the switch.
+
+### Changed
+
+- Batched todo operations with real tool calls to prevent solo todo turns and extra round trips
+
+### Fixed
+
+- Fixed Bash internal URLs remaining unresolved when used as unquoted arguments inside command substitutions ([#5535](https://github.com/can1357/oh-my-pi/issues/5535)).
+
+## [16.5.2] - 2026-07-14
+
+### Breaking Changes
+
+- Removed the separate `selector` parameters from `read` and `grep`; line ranges and read modes must now be appended to `path`.
+
+### Added
+
+- Added a `generate_image.enabled` setting (Settings › Tools › Generate Image) to allow toggling the image generation tool.
+
+### Changed
+
+- Expanded provider rate-limit response header ingestion to all supported providers with header parsers (previously Anthropic-only), enabling proactive account rotation for multi-account sessions before hitting 429 errors.
+- Restored CPU model metadata in workstation prompts on non-Linux hosts.
+
+### Fixed
+
+- Fixed `omp config list --json` output truncation at 64 KiB when stdout is piped.
+- Fixed vim-style navigation (`h`/`j`/`k`/`l`) under the Kitty keyboard protocol.
+- Fixed `/guided-goal` throwing `Model not found` errors on websocket-only Codex models by routing the interview through the session's provider transport and reusing a single isolated side session.
+- Fixed `tool_result` extension handlers being unable to rewrite the model-visible content of a thrown tool failure.
+- Fixed intermittent Perplexity OAuth web search failures (401 errors) caused by transient transport drops on the ask endpoint.
+- Fixed the `generate_image` tool ignoring `--no-tools` and explicit tool whitelists.
+- Fixed markerless prose thinking preambles incorrectly becoming session titles when title models omit the `<title>` marker.
+- Fixed the agent recreating a todo list immediately after a user clears it with `/todo rm`.
+- Fixed internal-URL autocomplete (`agent://`, `skill://`, `omp://`, etc.) not triggering inside slash command arguments.
+- Fixed the browser tool hanging indefinitely during tab closure when the headless Chromium process is wedged on Windows.
+- Fixed `history://` URLs failing to resolve for unregistered, released, or resumed subagents by falling back to scanning artifacts directories on disk.
+- Fixed eval cells treating `timeout: 0` as a one-second deadline and reporting session-deadline cancellations as user aborts.
+- Fixed MCP OAuth dynamic client registration for pathful authorization-server issuers by preserving the discovered registration endpoint.
+- Fixed the `launch` tool failing to start Windows executables due to double-escaped PTY commands and arguments.
+- Fixed the built-in advisor warning `Advisor unavailable` for silent reviews: a content-less stop is a valid "nothing to add" outcome and is never retried or warned about, regardless of reported token usage ([#5212](https://github.com/can1357/oh-my-pi/issues/5212) follow-up).
+- Fixed `read`, `edit`, and `grep` tools failing on paths with a stray leading colon emitted by some models.
+- Fixed git plugin re-installs retaining stale commits by fetching Bun's cached clone before updating the lockfile pin.
+- Fixed overlapping Bash timeout and interrupt cleanup to explicitly abort isolated shells instead of leaving child processes running.
+- Fixed a bug where generic provider aborts arriving as `stopReason: "error"` were not auto-retried.
+- Fixed switching from a vision model to a text-only model mid-session sending historical image blocks to the new provider.
+- Fixed inline images in Agent Hub transcripts by routing replayed images through the shared image budget and Kitty placeholder renderer.
+- Fixed OSC 5522 paste in direct API-key login prompts being routed to the hidden main chat editor instead of the focused credential field.
+- Fixed plugin installation failures when an ES module extension synchronously requires CommonJS helpers.
+- Fixed GitHub code search rejecting empty optional date placeholders.
+- Fixed `/tree` navigation onto a `/skill:` injection node landing on the incorrect entry.
+- Fixed interactive TUI sessions crashing with concurrent JS runtime errors when the JS eval worker falls back to the in-process inline path.
+- Fixed compaction aborting instead of trying an authenticated fallback model when Amazon Bedrock credential resolution fails.
+- Fixed full-context forks and `/tan` clones cold-missing OpenAI prompt caches by properly persisting and inheriting provider prompt-cache keys.
+- Fixed Codex advisor requests using local session labels as provider session IDs.
+- Fixed macOS stdio MCP servers launching in a detached session, allowing the TCC Apple Events permission prompt to trigger.
+- Fixed the ask tool timeout to auto-select the recommended option when the UI selector does not settle.
+- Fixed LSP workspace diagnostics for Go workspaces to correctly recognize `go.work` roots and include all used modules.
+- Fixed interactive OAuth login success messages waiting on background model discovery.
+- Fixed Windows bash tool crashes when an explicit timeout fires while a piped command is still streaming.
+- Fixed subagent `yield` tool calls being discarded when the soft request budget hard-aborted the same assistant turn.
+- Fixed `--tools` filtering in interactive sessions disabling deferred MCP tools.
+- Fixed kept-alive task subagents entering repeated provider-call loops after an IRC wake and terminal yield.
+- Fixed manual `/compact` with the snapcompact strategy hard-failing on text-only active models.
+- Fixed the empty-editor `←←` gesture trapping input when opening the Agent Hub from persisted/parked subagents.
+- Fixed eval `read()` URI handling in Python and JS runtimes to correctly delegate URI reads and pass pagination arguments.
+- Fixed discovered plugin `.mcp.json` stdio servers launching relative `command` or `cwd` values against the session cwd instead of the plugin's config directory.
+- Fixed Model Hub DEFAULT role assignments with `auto` retaining a stale concrete reasoning suffix after restart.
+- Fixed configured `retry.fallbackChains` failing to engage on non-retryable provider errors.
+- Fixed backgrounded Bash blocks continuing to repaint with live output after completion.
+- Fixed `--reasoning-slide-plan` silently ending the run with no code written when the model answered with a text-only reply.
+- Fixed launch tool rendering issues, including stacked pending headers and confusing start/wait results when readiness timed out.
+- Fixed the in-process `stat` and other GNU-flavored shell builtins (such as `date`, `sed`, `mktemp`, `tail`, `find`, `base64`, and `ln`) mangling or failing on macOS/BSD-style invocations.
+
 ## [16.5.1] - 2026-07-14
 
 ### Changed
@@ -374,6 +451,7 @@
 - Fixed retry fallback model recovery by exposing `retry.fallbackChains` in `/settings`, adding a `/model` action to assign the selected default fallback model, and clearing a selected model's retry cooldown marker on manual model switches. ([#4533](https://github.com/can1357/oh-my-pi/issues/4533))
 - Fixed `/handoff` and auto-handoff skipping extension lifecycle hooks by emitting cancellable `session_before_switch` hooks and a `session_switch` with `reason: "handoff"` after the replacement session is ready ([#4434](https://github.com/can1357/oh-my-pi/issues/4434)).
 - Fixed TTSR stream interrupts so only the tool call whose stream matched a rule receives the rule-named abort result; sibling tool-call placeholders now use a neutral abort reason ([#2783](https://github.com/can1357/oh-my-pi/issues/2783)).
+- Fixed TTSR rules with a leading `(?i)`/`(?m)`/`(?s)` inline regex flag never registering: `new RegExp("(?i)...")` throws in Bun/JS, so the condition failed to compile and the rule was silently dropped. Leading inline flag groups are now translated to native `RegExp` flags. Also recover `scope` tokens and sibling values from malformed frontmatter (e.g. `scope: "text","thinking"`), which previously left literal quotes on the parsed values ([#4796](https://github.com/can1357/oh-my-pi/issues/4796)).
 
 ## [16.3.11] - 2026-07-06
 

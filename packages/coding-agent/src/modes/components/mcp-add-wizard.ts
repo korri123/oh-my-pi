@@ -63,7 +63,7 @@ export interface MCPAddWizardOAuthResult {
 interface MCPAddWizardOAuthOptions {
 	serverUrl?: string;
 	resource?: string;
-	registrationEndpoint?: string;
+	registrationUrl?: string;
 	/**
 	 * External cancellation source. Aborting it tears down the in-flight OAuth
 	 * flow and surfaces a neutral cancellation error. The wizard wires its own
@@ -83,11 +83,11 @@ interface WizardState {
 	authMethod: AuthMethod;
 	oauthAuthUrl: string;
 	oauthTokenUrl: string;
+	oauthRegistrationUrl: string;
 	oauthClientId: string;
 	oauthClientSecret: string;
 	oauthScopes: string;
 	oauthResource: string;
-	oauthRegistrationEndpoint: string;
 	oauthCredentialId: string | null;
 	apiKey: string;
 	authLocation: AuthLocation | null;
@@ -115,11 +115,11 @@ export class MCPAddWizard extends Container {
 		authMethod: "none",
 		oauthAuthUrl: "",
 		oauthTokenUrl: "",
+		oauthRegistrationUrl: "",
 		oauthClientId: "",
 		oauthClientSecret: "",
 		oauthScopes: "",
 		oauthResource: "",
-		oauthRegistrationEndpoint: "",
 		oauthCredentialId: null,
 		apiKey: "",
 		authLocation: null,
@@ -1029,10 +1029,10 @@ export class MCPAddWizard extends Container {
 				if (oauth) {
 					this.#state.oauthAuthUrl = oauth.authorizationUrl;
 					this.#state.oauthTokenUrl = oauth.tokenUrl;
+					this.#state.oauthRegistrationUrl = oauth.registrationUrl || "";
 					this.#state.oauthClientId = oauth.clientId || "";
 					this.#state.oauthScopes = oauth.scopes || "";
 					this.#state.oauthResource = oauth.resource || (this.#state.transport === "stdio" ? "" : this.#state.url);
-					this.#state.oauthRegistrationEndpoint = oauth.registrationEndpoint || "";
 					this.#state.authMethod = "oauth";
 
 					this.#contentContainer.clear();
@@ -1200,8 +1200,8 @@ export class MCPAddWizard extends Container {
 				this.#state.oauthScopes,
 				{
 					serverUrl: this.#state.url || undefined,
+					registrationUrl: this.#state.oauthRegistrationUrl || undefined,
 					resource: oauthResource || undefined,
-					registrationEndpoint: this.#state.oauthRegistrationEndpoint || undefined,
 					abortSignal: this.#oauthAbort.signal,
 				},
 			);

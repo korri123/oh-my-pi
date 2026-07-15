@@ -206,7 +206,6 @@ function renderDescription(
 		agents: renderedAgents,
 		spawningDisabled,
 		defaultAgent: spawnPolicy.defaultAgent,
-		allowedAgentsText: spawnPolicy.allowedPromptText,
 		isolationEnabled,
 		batchEnabled,
 		asyncEnabled,
@@ -1265,6 +1264,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					systemPrompt: `${planModeSubagentPrompt}\n\n${agent.systemPrompt}`,
 					tools: planModeTools,
 					spawns: undefined,
+					// Read-only exploration: never arm prewalk (its plan/implement
+					// nudges assume edit tools the plan-mode toolset doesn't have).
+					prewalk: undefined,
 				}
 			: agent;
 

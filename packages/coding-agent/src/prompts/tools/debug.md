@@ -1,4 +1,4 @@
-Debugger access.
+Debugger access. Prefer over bash for program state, breakpoints, stepping, or thread inspection.
 
 <instruction>
 - You SHOULD prefer this over bash for program state, breakpoints, stepping, thread inspection, or interrupting a running process.
