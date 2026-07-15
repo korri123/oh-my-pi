@@ -45,7 +45,7 @@ Bundled agents are embedded at build time (`src/task/agents.ts`) using text impo
 `EMBEDDED_AGENT_DEFS` defines:
 
 - `scout`, `designer`, `reviewer`, `librarian` from prompt files
-- `task` and `sonic` from shared `task.md` body plus injected frontmatter; `task` ships with `prewalk: true` (default hand-off to the `smol` role, opt out per agent via `/agents` / `task.agentPrewalk`)
+- `task` and `sonic` from shared `task.md` body plus injected frontmatter; no bundled agent sets `prewalk` — the generic `task` agent's hand-off is armed by the `task.prewalk` setting (default off), or per agent via `/agents` / `task.agentPrewalk` / user agent frontmatter
 
 Loading path:
 
@@ -183,7 +183,7 @@ So deeper levels cannot spawn further tasks even if the agent definition include
 When parent plan mode is enabled, `TaskTool.#runSpawn` builds an `effectiveAgent` before launching subprocesses:
 
 - prepends the plan-mode subagent system prompt
-- restricts tools to `read`, `search`, `find`, `lsp`, and `web_search`, plus `ast_grep`/`report_finding` when the agent's own tool list declares them (`PLAN_MODE_AGENT_TOOL_ALLOWLIST`)
+- restricts tools to `read`, `search`, `find`, `lsp`, and `web_search`, plus `ast_grep` when the agent's own tool list declares it (`PLAN_MODE_AGENT_TOOL_ALLOWLIST`)
 - clears child spawns
 - clears `prewalk` (read-only exploration must not receive the prewalk plan/implement nudges)
 

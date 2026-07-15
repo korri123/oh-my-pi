@@ -2,10 +2,18 @@
 
 ## [Unreleased]
 
+## [17.0.0] - 2026-07-15
+
 ### Added
 
-- Display LaTeX now renders `\underbrace`/`\overbrace` (and the bracket/paren variants) as drawn horizontal braces with centered labels, and stacks `\overset`/`\underset`/`\stackrel` annotations above/below the base instead of falling back to flat inline glyphs.
-- Display LaTeX renders multi-letter script words (`N_{turns}`) as raised/lowered blocks instead of ragged per-character Unicode sub/superscript glyphs; single letters and digits keep the compact Unicode forms.
+- Improved LaTeX rendering for \underbrace, \overbrace, \overset, \underset, and \stackrel to use drawn horizontal braces with centered labels and stacked annotations instead of flat inline glyphs.
+- Improved LaTeX rendering of multi-letter subscripts and superscripts by displaying them as raised or lowered blocks instead of ragged per-character Unicode glyphs.
+- Added an opt-in Editor.setImeSafeCursorLayout() method to protect macOS IME preedit while retaining the compact bordered layout by default.
+
+### Fixed
+
+- Fixed SIXEL image rendering where images with cell heights not divisible by 6 would have their bottom portion overwritten by subsequent content.
+- Fixed an issue where the Kitty OSC 99 desktop-notification capability probe would leak raw text into the terminal pane when running inside a multiplexer like tmux or screen.
 
 ## [16.5.2] - 2026-07-14
 
