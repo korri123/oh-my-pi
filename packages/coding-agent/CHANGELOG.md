@@ -11,6 +11,9 @@
 ### Changed
 
 - Fixed a crash when a plugin/custom tool renderer returns a component that throws during its later `render()` pass (e.g. `TypeError: th.bold is not a function` from a plugin that styles its header off an object without a `bold` method). `ToolExecutionComponent` now wraps every renderer-returned call/result component so a throwing `render()` degrades to the safe fallback (tool label or raw result text) instead of taking down the transcript ([#4978](https://github.com/can1357/oh-my-pi/issues/4978)).
+- Changed the default `astGrep.enabled` setting to `false`
+- Batched todo operations with real tool calls to prevent solo todo turns and extra round trips
+- Added the `magicKeywords.ultrasolve` setting and `ultrasolve` keyword: it inherits ultrathink's maximum-thinking behavior and guides a bounded `task` → `agent: "solver"` escalation with self-contained context that genericizes irrelevant identity details while preserving technical semantics.
 
 ### Fixed
 

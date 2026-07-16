@@ -1694,7 +1694,8 @@ export const SETTINGS_SCHEMA = {
 			tab: "interaction",
 			group: "Magic Keywords",
 			label: "Magic Keywords",
-			description: "Enable hidden notices for standalone ultrathink, orchestrate, and workflowz keywords",
+			description:
+				"Enable hidden notices for standalone ultrathink, ultrasolve, orchestrate, and workflowz keywords",
 		},
 	},
 
@@ -1706,6 +1707,18 @@ export const SETTINGS_SCHEMA = {
 			group: "Magic Keywords",
 			label: "Ultrathink Keyword",
 			description: "Let standalone ultrathink request maximum automatic thinking and append its hidden notice",
+		},
+	},
+
+	"magicKeywords.ultrasolve": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "interaction",
+			group: "Magic Keywords",
+			label: "Ultrasolve Keyword",
+			description:
+				"Let standalone ultrasolve inherit maximum thinking and request a self-contained solver escalation",
 		},
 	},
 

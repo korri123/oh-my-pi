@@ -251,6 +251,7 @@ import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionStat
 import { containsOrchestrate, ORCHESTRATE_NOTICE } from "../modes/orchestrate";
 import { theme } from "../modes/theme/theme";
 import { parseTurnBudget } from "../modes/turn-budget";
+import { containsUltrasolve, ULTRASOLVE_NOTICE } from "../modes/ultrasolve";
 import { containsUltrathink, ULTRATHINK_NOTICE } from "../modes/ultrathink";
 import { computeNonMessageBreakdown, computeNonMessageTokens } from "../modes/utils/context-usage";
 import { containsWorkflow, renderWorkflowNotice } from "../modes/workflow";
@@ -1596,6 +1597,7 @@ function isUserQueuedMessage(message: AgentMessage): boolean {
  *  enqueues alongside a user prompt. Keep in sync with that method. */
 const MAGIC_KEYWORD_NOTICE_TYPES: ReadonlySet<string> = new Set([
 	"ultrathink-notice",
+	"ultrasolve-notice",
 	"orchestrate-notice",
 	"workflow-notice",
 ]);
@@ -1603,14 +1605,14 @@ const MAGIC_KEYWORD_NOTICE_TYPES: ReadonlySet<string> = new Set([
 /** Custom-message type of the hidden companion carrying vision descriptions of image
  *  attachments sent to a text-only model (see `#buildImageDescriptionNotice`). */
 const IMAGE_ATTACHMENT_DESCRIPTION_TYPE = "image-attachment-description";
-
 /**
  * A hidden, user-attributed companion of a queued user prompt: the magic-keyword
- * notices (`ultrathink`/`orchestrate`/`workflow`) enqueued alongside the user
- * message. They are `attribution: "user"` but `display: false`, so they are not
- * editor-restorable; when the user pulls their prompt back out of the queue these
- * must leave with it rather than linger as stale, companion-less steering. Scoped to
- * the known notice types so an unrelated hidden user custom is never silently dropped.
+ * notices (`ultrathink`/`ultrasolve`/`orchestrate`/`workflow`) enqueued alongside
+ * the user message. They are `attribution: "user"` but `display: false`, so they
+ * are not editor-restorable; when the user pulls their prompt back out of the
+ * queue these must leave with it rather than linger as stale, companion-less
+ * steering. Scoped to the known notice types so an unrelated hidden user custom
+ * is never silently dropped.
  */
 function isHiddenUserCompanion(message: AgentMessage): boolean {
 	return (
@@ -7830,7 +7832,7 @@ export class AgentSession {
 		return { ...message, content: normalized } as T;
 	}
 
-	#magicKeywordEnabled(keyword: "orchestrate" | "ultrathink" | "workflow"): boolean {
+	#magicKeywordEnabled(keyword: "orchestrate" | "ultrasolve" | "ultrathink" | "workflow"): boolean {
 		return this.settings.get("magicKeywords.enabled") && this.settings.get(`magicKeywords.${keyword}`);
 	}
 
@@ -7839,7 +7841,18 @@ export class AgentSession {
 		const turnBudget = parseTurnBudget(text);
 		this.sessionManager.beginTurnBudget(turnBudget?.total ?? null, turnBudget?.hard ?? false);
 		const keywordNotices: CustomMessage[] = [];
-		if (this.#magicKeywordEnabled("ultrathink") && containsUltrathink(text)) {
+		const ultrasolveActive = this.#magicKeywordEnabled("ultrasolve") && containsUltrasolve(text);
+		const ultrathinkActive = this.#magicKeywordEnabled("ultrathink") && containsUltrathink(text);
+		if (ultrasolveActive) {
+			keywordNotices.push({
+				role: "custom",
+				customType: "ultrasolve-notice",
+				content: ULTRASOLVE_NOTICE,
+				display: false,
+				attribution: "user",
+				timestamp,
+			});
+		} else if (ultrathinkActive) {
 			keywordNotices.push({
 				role: "custom",
 				customType: "ultrathink-notice",
@@ -9677,7 +9690,10 @@ export class AgentSession {
 		if (getSupportedEfforts(model).length === 0) return;
 
 		let resolved: Effort | undefined;
-		if (this.#magicKeywordEnabled("ultrathink") && containsUltrathink(promptText)) {
+		if (
+			(this.#magicKeywordEnabled("ultrathink") && containsUltrathink(promptText)) ||
+			(this.#magicKeywordEnabled("ultrasolve") && containsUltrasolve(promptText))
+		) {
 			// The user explicitly asked for maximum thinking; bypass the classifier
 			// (and its xhigh auto ceiling) and jump straight to the highest
 			// supported level for this model.
