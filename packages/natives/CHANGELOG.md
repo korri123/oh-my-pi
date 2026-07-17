@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [17.0.2] - 2026-07-17
+
+### Fixed
+
+- Fixed an issue where running `uv run --extra <package> pytest` bypassed native pytest minimization due to a wrapper parsing error.
+- Fixed a bug where timed-out shell pipelines dropped captured output and could cause Windows hosts to terminate during teardown. (#5316)
+
 ## [17.0.1] - 2026-07-16
 
 ### Fixed
