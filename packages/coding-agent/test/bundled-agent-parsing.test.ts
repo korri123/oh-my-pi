@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { Effort } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { resolveAgentModelPatterns, resolveModelOverride } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
@@ -22,6 +23,16 @@ describe("bundled agent parsing", () => {
 		expect(task).toBeDefined();
 		expect(task?.model).toEqual(["@task"]);
 		expect(task?.thinkingLevel).toBe(AUTO_THINKING);
+	});
+
+	it("parses the solver bundled agent definition", () => {
+		const solver = getBundledAgent("solver");
+
+		expect(solver).toBeDefined();
+		expect(solver?.source).toBe("bundled");
+		expect(solver?.model).toEqual(["pi/solver"]);
+		expect(solver?.thinkingLevel).toBe(ThinkingLevel.High);
+		expect(solver?.tools).toEqual(expect.arrayContaining(["web_search", "browser"]));
 	});
 
 	// Issue #4761: with `modelRoles.slow: ...:xhigh`, the role's explicit effort

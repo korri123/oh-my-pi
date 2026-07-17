@@ -8,6 +8,7 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import * as autoThinkingClassifier from "@oh-my-pi/pi-coding-agent/auto-thinking/classifier";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { ULTRASOLVE_NOTICE } from "@oh-my-pi/pi-coding-agent/modes/ultrasolve";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -80,7 +81,7 @@ describe("AgentSession magic keyword settings", () => {
 		created.settings.set("magicKeywords.enabled", false);
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 
-		await session.prompt("please workflowz this and ultrathink through it");
+		await session.prompt("please workflowz this and ultrathink through it and ultrasolve this");
 
 		const promptMessages = promptSpy.mock.calls[0]![0] as unknown as Array<{ customType?: string }>;
 		expect(promptMessages.map(message => message.customType).filter(Boolean)).toEqual([]);
@@ -95,6 +96,19 @@ describe("AgentSession magic keyword settings", () => {
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 
 		await session.prompt("please orchestrate and workflowz this");
+
+		const promptMessages = promptSpy.mock.calls[0]![0] as unknown as Array<{ customType?: string }>;
+		expect(promptMessages.map(message => message.customType).filter(Boolean)).toEqual([]);
+	});
+
+	it("honors a disabled ultrasolve per-keyword notice toggle", async () => {
+		const created = await createMagicKeywordSession(root);
+		session = created.session;
+		authStorage = created.authStorage;
+		created.settings.set("magicKeywords.ultrasolve", false);
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+
+		await session.prompt("please ultrasolve this");
 
 		const promptMessages = promptSpy.mock.calls[0]![0] as unknown as Array<{ customType?: string }>;
 		expect(promptMessages.map(message => message.customType).filter(Boolean)).toEqual([]);
@@ -159,6 +173,21 @@ describe("AgentSession magic keyword settings", () => {
 		expect(session.autoResolvedThinkingLevel()).toBe(Effort.Low);
 	});
 
+	it("uses ultrasolve to select the highest supported effort during auto-thinking", async () => {
+		const created = await createMagicKeywordSession(root);
+		session = created.session;
+		authStorage = created.authStorage;
+		vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+		const classifierSpy = vi.spyOn(autoThinkingClassifier, "classifyDifficulty").mockResolvedValue(Effort.Low);
+		session.setThinkingLevel(AUTO_THINKING);
+
+		await session.prompt("ultrasolve through the unsafe refactor");
+
+		expect(classifierSpy).not.toHaveBeenCalled();
+		expect(session.thinkingLevel).toBe(Effort.XHigh);
+		expect(session.autoResolvedThinkingLevel()).toBe(Effort.XHigh);
+	});
+
 	it("queues the magic-keyword notice before the user message", async () => {
 		const created = await createMagicKeywordSession(root);
 		session = created.session;
@@ -173,5 +202,38 @@ describe("AgentSession magic keyword settings", () => {
 		expect(noticeIdx).toBeGreaterThanOrEqual(0);
 		expect(userIdx).toBeGreaterThanOrEqual(0);
 		expect(noticeIdx).toBeLessThan(userIdx);
+	});
+
+	it("queues the ultrasolve notice with its exported content before the user message", async () => {
+		const created = await createMagicKeywordSession(root);
+		session = created.session;
+		authStorage = created.authStorage;
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+
+		await session.prompt("ultrasolve through the unsafe refactor");
+
+		const promptMessages = promptSpy.mock.calls[0]![0] as unknown as Array<{
+			role?: string;
+			customType?: string;
+			content?: string;
+		}>;
+		const noticeIdx = promptMessages.findIndex(m => m.customType === "ultrasolve-notice");
+		const userIdx = promptMessages.findIndex(m => m.role === "user");
+		const notice = promptMessages[noticeIdx];
+		expect(noticeIdx).toBeGreaterThanOrEqual(0);
+		expect(userIdx).toBeGreaterThanOrEqual(0);
+		expect(noticeIdx).toBeLessThan(userIdx);
+		expect(notice?.content).toBe(ULTRASOLVE_NOTICE);
+	});
+	it("gives ultrasolve notice precedence when both keywords appear", async () => {
+		const created = await createMagicKeywordSession(root);
+		session = created.session;
+		authStorage = created.authStorage;
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+
+		await session.prompt("please ultrasolve and ultrathink through it");
+
+		const promptMessages = promptSpy.mock.calls[0]![0] as unknown as Array<{ customType?: string }>;
+		expect(promptMessages.map(message => message.customType).filter(Boolean)).toEqual(["ultrasolve-notice"]);
 	});
 });

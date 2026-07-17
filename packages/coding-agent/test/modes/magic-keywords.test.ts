@@ -1,6 +1,8 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { hasMagicKeyword, highlightMagicKeywords } from "@oh-my-pi/pi-coding-agent/modes/magic-keywords";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { containsUltrasolve, ULTRASOLVE_NOTICE } from "@oh-my-pi/pi-coding-agent/modes/ultrasolve";
+import { ULTRATHINK_NOTICE } from "@oh-my-pi/pi-coding-agent/modes/ultrathink";
 
 beforeAll(async () => {
 	// Gradient palettes read the active theme's color mode.
@@ -37,6 +39,15 @@ describe("highlightMagicKeywords", () => {
 		expect(highlightMagicKeywords(input)).toBe(input);
 	});
 
+	it("never paints ultrasolve inside code spans, fenced blocks, or XML sections", () => {
+		const input = "`ultrasolve` but please ultrasolve now\n```\nultrasolve\n```\n<x>ultrasolve</x>";
+		const decorated = highlightMagicKeywords(input);
+		expect(decorated).not.toBe(input);
+		expect(decorated).toContain("`ultrasolve`");
+		expect(decorated).toContain("```\nultrasolve\n```");
+		expect(decorated).toContain("<x>ultrasolve</x>");
+		expect(Bun.stripANSI(decorated)).toBe(input);
+	});
 	it("paints only the prose occurrence when the keyword also appears in code", () => {
 		const decorated = highlightMagicKeywords("`orchestrate` but please orchestrate now");
 		// The code-span occurrence stays literal; the prose one is split by gradient escapes.
@@ -79,6 +90,14 @@ describe("hasMagicKeyword", () => {
 		expect(hasMagicKeyword("please ultrathink this")).toBe(true);
 		expect(hasMagicKeyword("now orchestrate everything")).toBe(true);
 		expect(hasMagicKeyword("just workflowz the steps")).toBe(true);
+		expect(hasMagicKeyword("please ultrasolve this")).toBe(true);
+	});
+
+	it("detects ultrasolve independently from ultrathink", () => {
+		expect(containsUltrasolve("please ultrasolve this")).toBe(true);
+		expect(containsUltrasolve("please ultrathink this")).toBe(false);
+		expect(hasMagicKeyword("please ultrasolve this")).toBe(true);
+		expect(hasMagicKeyword("please ultrathink this")).toBe(true);
 	});
 
 	it("detects standalone keywords beside prose punctuation and quotes", () => {
@@ -111,6 +130,15 @@ describe("hasMagicKeyword", () => {
 		expect(hasMagicKeyword("src/modes/ultrathink.ts")).toBe(false);
 		expect(hasMagicKeyword("orchestrate.ts is a file")).toBe(false);
 		expect(hasMagicKeyword("packages/coding-agent/test/modes/workflowz.test.ts")).toBe(false);
+		expect(containsUltrasolve("ultrasolver is a different word")).toBe(false);
+		expect(containsUltrasolve("src/ultrasolve.ts is a path")).toBe(false);
+		expect(containsUltrasolve("prefix-ultrasolve-suffix")).toBe(false);
+	});
+
+	it("rejects ultrasolve inside code spans, fences, and xml sections", () => {
+		expect(containsUltrasolve("`ultrasolve`")).toBe(false);
+		expect(containsUltrasolve("```\nultrasolve\n```")).toBe(false);
+		expect(containsUltrasolve("<x>ultrasolve</x>")).toBe(false);
 	});
 
 	it("rejects keywords inside code spans, fences, and xml sections", () => {
@@ -122,5 +150,24 @@ describe("hasMagicKeyword", () => {
 	it("returns false for empty / keyword-free text", () => {
 		expect(hasMagicKeyword("")).toBe(false);
 		expect(hasMagicKeyword("plain message with no keywords")).toBe(false);
+	});
+});
+
+describe("magic-keyword notices", () => {
+	it("restores the upstream ultrathink notice and exposes the ultrasolve notice contract", () => {
+		expect(ULTRATHINK_NOTICE).toBe(
+			"<system-notice>\nThis task involves multi-step reasoning. Think carefully through the problem before responding.\n</system-notice>",
+		);
+
+		expect(ULTRASOLVE_NOTICE).toMatch(/^<system-notice>\n[\s\S]+\n<\/system-notice>$/);
+		expect(ULTRASOLVE_NOTICE).toContain("task");
+		expect(ULTRASOLVE_NOTICE).toContain('agent: "solver"');
+		expect(ULTRASOLVE_NOTICE).toMatch(/self-contained[\s\S]*context|context[\s\S]*self-contained/i);
+		expect(ULTRASOLVE_NOTICE).toMatch(
+			/solver[\s\S]{0,300}(?:no|not|without|cannot)[\s\S]{0,120}(?:repository|repo|read|file|shell|command)/i,
+		);
+		expect(ULTRASOLVE_NOTICE).toMatch(/generici[sz]\w*/i);
+		expect(ULTRASOLVE_NOTICE).toMatch(/technically exact|technical solution/i);
+		expect(ULTRASOLVE_NOTICE).toMatch(/preserv\w* (?:every )?(?:behavior|semantics)/i);
 	});
 });
