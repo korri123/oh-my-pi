@@ -18,15 +18,14 @@ env(key?=None, value?=None) → str | None | dict
 output(*ids, format?="raw", query?=None, offset?=None, limit?=None) → str | dict | list[dict]
 tool.<name>(args) → unknown
     Invoke any session tool; `args` = its parameter object.
-completion(prompt, model?="default", system?=None, schema?=None) → str | dict
-    Oneshot, stateless (no history/tools). `model`: "smol" fast | "default" session | "slow" most capable. `schema` (JSON-Schema) → structured output, parsed object.
-{{#if spawns}}agent(prompt, agent?="{{spawnDefaultAgent}}", model?=None, label?=None, schema?=None, handle?=False, advisor?=None) → str | dict
-    Run a subagent → final output. `agent` picks another discovered agent; omit it to use `{{spawnDefaultAgent}}`.{{#if spawnAllowedAgentsText}} Allowed agents: {{spawnAllowedAgentsText}}.{{/if}} `schema` as in completion(). Background via `local://` files named in the prompt. `handle` → DAG node dict { text, output, handle: "agent://<id>", id, agent } (parsed under `data` when `schema` set). `advisor=True` force-attaches an advisor to the spawn (overrides advisor.enabled/subagents settings; no-op without an advisor-role model; doubles per-turn model spend — costly across wide fan-outs).
-{{#if js}}    JS: options are ONE trailing object — agent(prompt, { agent, schema, handle, advisor }).
+completion(prompt, model?="default"|"smol"|"slow", system?=None, schema?=None) → str | dict
+    Oneshot, stateless (no history/tools). `model`: "smol" fast | "default" session | "slow" most capable. `schema` (JSON-Schema) → parsed object.
+{{#if spawns}}agent(prompt, agent?="{{spawnDefaultAgent}}", model?=None, label?=None, schema?=None, schema{{#if js}}Mode{{else}}_mode{{/if}}?="permissive", isolated?=None, apply?=None, merge?=None, handle?=False, advisor?=None) → str | dict
+    Run a subagent → final output. `agent` selects a discovered agent; omit it to use `{{spawnDefaultAgent}}`.{{#if spawnAllowedAgentsText}} Allowed agents: {{spawnAllowedAgentsText}}.{{/if}} `schema` overrides agent/session schemas; `schemaMode`/`schema_mode`: "permissive" | "strict". Effective schemas return parsed data. `isolated` requests a worktree; `apply`/`merge` control its changes. Background via `local://` files named in the prompt. `handle` → { text, output, handle: "agent://<id>", id, agent }, parsed `data` when structured.
+{{#if js}}    JS: ONE trailing object — agent(prompt, { agent, model, label, schema, schemaMode, isolated, apply, merge, handle, advisor }).{{/if}}
 {{/if}}
 integrate(nodes, order?="auto", on_conflict?="resolve", resolver?="task") → dict
     Merge a fan-out of isolated agent() patches into the working tree as ONE unit. Pass the handle nodes from agent(isolated=True, apply=False, handle=True). Applies in order ("auto" smallest-first | "given"); a 3-way conflict dispatches a resolver subagent ("resolve") or stops ("abort"). Atomic — the real tree changes only if every patch integrates cleanly, else it's left untouched. Returns { ok, applied, resolved, failed, skipped, combined_patch_path, applied_to_worktree }.
-{{/if}}
 parallel(thunks) → list
     Thunks through a bounded pool (wide as a `task` batch — don't pre-shrink), input order kept; returns when all finish, a throwing thunk propagates.
 pipeline(items, ...stages) → list
