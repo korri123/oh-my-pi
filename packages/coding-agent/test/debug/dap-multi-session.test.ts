@@ -1,7 +1,4 @@
 import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
-import * as fs from "node:fs/promises";
-import * as os from "node:os";
-import * as path from "node:path";
 import { DapClient } from "@oh-my-pi/pi-coding-agent/dap/client";
 import { DapSessionManager } from "@oh-my-pi/pi-coding-agent/dap/session";
 import type {
@@ -9,68 +6,39 @@ import type {
 	DapClientState,
 	DapEventMessage,
 	DapResolvedAdapter,
-	DapSourceBreakpoint,
 } from "@oh-my-pi/pi-coding-agent/dap/types";
 
 const TEST_ADAPTER: DapResolvedAdapter = {
 	name: "js-debug-adapter",
-	command: "js-debug-adapter",
-	args: [],
-	resolvedCommand: "js-debug-adapter",
-	languages: [],
-	fileTypes: [],
-	rootMarkers: [],
-	launchDefaults: {},
-	attachDefaults: {},
+	command: "node",
+	args: ["dapDebugServer.js", "$" + "{port}", "127.0.0.1"],
+	resolvedCommand: "node",
+	languages: ["javascript", "typescript"],
+	fileTypes: [".js", ".ts"],
+	rootMarkers: ["package.json"],
+	launchDefaults: { request: "launch", type: "pwa-node", stopOnEntry: true },
+	attachDefaults: { request: "attach", type: "pwa-node" },
 	connectMode: "tcp",
-	debugConfigTypes: ["pwa-*", "node", "chrome", "node-terminal", "msedge"],
-	threadlessContinueNeedsChildStopWait: true,
 	acceptsDirectoryProgram: false,
 };
 
-type DapEventHandler = (body: unknown, event: DapEventMessage) => void | Promise<void>;
-type DapReverseRequestHandler = (args: unknown) => unknown | Promise<unknown>;
-
-interface SentDapRequest {
-	command: string;
-	args?: unknown;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
-}
-
-function getSourceBreakpoints(args: unknown): DapSourceBreakpoint[] {
-	if (!isRecord(args) || !Array.isArray(args.breakpoints)) {
-		return [];
-	}
-	return args.breakpoints.filter((breakpoint): breakpoint is DapSourceBreakpoint => {
-		return isRecord(breakpoint) && typeof breakpoint.line === "number";
-	});
-}
-
-function getRequestSourcePath(args: unknown): string | undefined {
-	if (!isRecord(args) || !isRecord(args.source)) {
-		return undefined;
-	}
-	return typeof args.source.path === "string" ? args.source.path : undefined;
-}
+type EventHandler = (body: unknown, event: DapEventMessage) => void | Promise<void>;
+type ReverseHandler = (args: unknown) => unknown | Promise<unknown>;
 
 class FakeDapClient {
 	readonly proc: DapClientState["proc"];
+	readonly port = 8123;
+	readonly requests: Array<{ command: string; args: unknown }> = [];
+	readonly #events = new Map<string, Set<EventHandler>>();
+	readonly #reverseHandlers = new Map<string, ReverseHandler>();
 	readonly #exited = Promise.withResolvers<void>();
-	readonly #handlers = new Map<string, Set<DapEventHandler>>();
-	readonly #reverseHandlers = new Map<string, DapReverseRequestHandler>();
 	#alive = true;
-	emitInitialStopped = true;
-	supportsConfigurationDoneRequest = true;
-	readonly commandDelayMs = new Map<string, number>();
-	readonly stalledCommands = new Set<string>();
-	readonly sentRequests: SentDapRequest[] = [];
+	disposed = false;
 
 	constructor(
-		readonly adapter: DapResolvedAdapter,
-		readonly cwd: string,
+		readonly childConfiguration?: Record<string, unknown>,
+		readonly childRequest: "launch" | "attach" = "launch",
+		readonly stopOnStart = true,
 	) {
 		this.proc = {
 			exited: this.#exited.promise,
@@ -88,52 +56,35 @@ class FakeDapClient {
 	}
 
 	async initialize(): Promise<DapCapabilities> {
-		void Bun.sleep(10).then(() => {
-			this.#emit("initialized", {});
-			if (this.emitInitialStopped) {
-				this.#emit("stopped", { reason: "entry", threadId: 1 });
-			}
-		});
-		return { supportsConfigurationDoneRequest: this.supportsConfigurationDoneRequest };
+		queueMicrotask(() => this.#emit("initialized", {}));
+		return { supportsConfigurationDoneRequest: true };
 	}
 
-	async sendRequest<TBody = unknown>(command: string, args?: unknown, signal?: AbortSignal): Promise<TBody> {
-		this.sentRequests.push({ command, args });
-		if (this.stalledCommands.has(command)) {
-			const { promise, reject } = Promise.withResolvers<TBody>();
-			const abort = () => reject(new Error("aborted"));
-			if (signal?.aborted) {
-				abort();
-			} else {
-				signal?.addEventListener("abort", abort, { once: true });
+	async sendRequest(command: string, args?: unknown): Promise<unknown> {
+		this.requests.push({ command, args });
+		if (command === "launch") {
+			if (this.childConfiguration) {
+				queueMicrotask(() => {
+					void this.#emitReverse("startDebugging", {
+						request: this.childRequest,
+						configuration: this.childConfiguration,
+					});
+				});
+			} else if (this.stopOnStart) {
+				queueMicrotask(() => this.#emit("stopped", { reason: "entry", threadId: 7 }));
 			}
-			return await promise;
 		}
-		const delayMs = this.commandDelayMs.get(command);
-		if (delayMs !== undefined) {
-			await Bun.sleep(delayMs);
-		}
-		if (command === "setBreakpoints") {
-			return {
-				breakpoints: getSourceBreakpoints(args).map(breakpoint => ({
-					verified: true,
-					line: breakpoint.line,
-				})),
-			} as TBody;
-		}
+		if (command === "threads") return { threads: [{ id: 7, name: "target.js" }] };
 		if (command === "stackTrace") {
 			return {
-				stackFrames: [
-					{
-						id: 1,
-						name: "main",
-						line: 1,
-						column: 1,
-					},
-				],
-			} as TBody;
+				stackFrames: [{ id: 70, name: "main", line: 2, column: 1, source: { path: "/tmp/target.js" } }],
+			};
 		}
-		return {} as TBody;
+		if (command.endsWith("Breakpoints")) {
+			const breakpointArgs = args as { breakpoints?: unknown[] } | undefined;
+			return { breakpoints: (breakpointArgs?.breakpoints ?? []).map((_, id) => ({ id, verified: true })) };
+		}
+		return {};
 	}
 
 	waitForEvent(event: string): Promise<unknown> {
@@ -145,31 +96,16 @@ class FakeDapClient {
 		return promise;
 	}
 
-	onEvent(event: string, handler: DapEventHandler): () => void {
-		let handlers = this.#handlers.get(event);
-		if (!handlers) {
-			handlers = new Set<DapEventHandler>();
-			this.#handlers.set(event, handlers);
-		}
+	onEvent(event: string, handler: EventHandler): () => void {
+		const handlers = this.#events.get(event) ?? new Set<EventHandler>();
 		handlers.add(handler);
-		return () => handlers?.delete(handler);
+		this.#events.set(event, handlers);
+		return () => handlers.delete(handler);
 	}
 
-	onReverseRequest(command: string, handler: DapReverseRequestHandler): () => void {
+	onReverseRequest(command: string, handler: ReverseHandler): () => void {
 		this.#reverseHandlers.set(command, handler);
 		return () => this.#reverseHandlers.delete(command);
-	}
-
-	async triggerReverseRequest(command: string, args: unknown): Promise<unknown> {
-		const handler = this.#reverseHandlers.get(command);
-		if (handler) {
-			return await handler(args);
-		}
-		throw new Error(`No handler registered for reverse request: ${command}`);
-	}
-
-	emitEvent(event: string, body: unknown): void {
-		this.#emit(event, body);
 	}
 
 	isAlive(): boolean {
@@ -177,15 +113,24 @@ class FakeDapClient {
 	}
 
 	async dispose(): Promise<void> {
+		this.disposed = true;
 		this.#alive = false;
 		this.#exited.resolve();
 	}
 
 	#emit(event: string, body: unknown): void {
 		const message: DapEventMessage = { seq: 1, type: "event", event, body };
-		for (const handler of this.#handlers.get(event) ?? []) {
-			void handler(body, message);
-		}
+		for (const handler of this.#events.get(event) ?? []) void handler(body, message);
+	}
+
+	emit(event: string, body: unknown): void {
+		this.#emit(event, body);
+	}
+
+	async #emitReverse(command: string, args: unknown): Promise<void> {
+		const handler = this.#reverseHandlers.get(command);
+		if (!handler) throw new Error(`Missing reverse handler for ${command}`);
+		await handler(args);
 	}
 }
 
@@ -194,959 +139,111 @@ afterEach(() => {
 });
 
 describe("DAP multi-session debugging", () => {
-	it("spawns a child session when startDebugging is triggered", async () => {
+	it("routes recursive js-debug children, breakpoints, and termination through one session tree", async () => {
+		const root = new FakeDapClient({
+			name: "target.js",
+			type: "pwa-node",
+			__pendingTargetId: "child",
+			program: "/tmp/target.js",
+		});
+		const child = new FakeDapClient({
+			name: "[worker 1]",
+			type: "pwa-node",
+			__pendingTargetId: "grandchild",
+		});
+		const grandchild = new FakeDapClient();
+		const children = [child, grandchild];
+		spyOn(DapClient, "spawn").mockResolvedValue(root as unknown as DapClient);
+		spyOn(DapClient, "connect").mockImplementation(async () => {
+			const next = children.shift();
+			if (!next) throw new Error("Unexpected child DAP connection");
+			return next as unknown as DapClient;
+		});
 		const manager = new DapSessionManager();
 
-		const parentClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const childClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-
-		const parentClientWrapper = parentClient as unknown as DapClient;
-		parentClientWrapper.port = 9999;
-
-		const spawnSpy = spyOn(DapClient, "spawn").mockImplementation(async () => {
-			return parentClientWrapper;
-		});
-
-		const connectSpy = spyOn(DapClient, "connect").mockImplementation(async () => {
-			return childClient as unknown as DapClient;
-		});
-
-		const bpFile = path.resolve(process.cwd(), "src/main.ts");
-		const bpResponse = await manager.setBreakpoint(bpFile, 42);
-		expect(bpResponse.snapshot).toBeUndefined();
-		expect(bpResponse.breakpoints.length).toBe(1);
-
-		const parentSummary = await manager.launch({
-			adapter: TEST_ADAPTER,
-			program: "test.js",
-			cwd: process.cwd(),
-		});
-
-		expect(parentSummary.id).toBe("debug-1");
-		expect(manager.listSessions().length).toBe(1);
-
-		expect(parentClient.sentRequests).toContainEqual(
-			expect.objectContaining({
-				command: "setBreakpoints",
-			}),
-		);
-
-		const startDebuggingPromise = parentClient.triggerReverseRequest("startDebugging", {
-			request: "attach",
-			configuration: {
-				type: "pwa-node",
-				name: "child-worker",
-				port: 9999,
-				cwd: process.cwd(),
-			},
-		});
-
-		await startDebuggingPromise;
-
-		const sessions = manager.listSessions();
-		expect(sessions.length).toBe(2);
-		expect(sessions.map(s => s.id)).toContain("debug-2");
-
-		const rootSummary = sessions.find(s => s.id === "debug-1");
-		expect(rootSummary?.childSessionIds).toEqual(["debug-2"]);
-
-		const childSummary = sessions.find(s => s.id === "debug-2");
-		expect(childSummary?.parentSessionId).toBe("debug-1");
-
-		expect(childClient.sentRequests).toContainEqual(
-			expect.objectContaining({
-				command: "setBreakpoints",
-				args: expect.objectContaining({
-					source: expect.objectContaining({ path: bpFile }),
-					breakpoints: expect.arrayContaining([expect.objectContaining({ line: 42 })]),
-				}),
-			}),
-		);
-
-		expect(childClient.sentRequests).toContainEqual(
-			expect.objectContaining({
-				command: "configurationDone",
-			}),
-		);
-
-		const parentBreakpointRequestCount = parentClient.sentRequests.filter(request => {
-			return request.command === "setBreakpoints" && getRequestSourcePath(request.args) === bpFile;
-		}).length;
-
-		await manager.removeBreakpoint(bpFile, 42);
-
-		expect(
-			parentClient.sentRequests.filter(request => {
-				return request.command === "setBreakpoints" && getRequestSourcePath(request.args) === bpFile;
-			}),
-		).toHaveLength(parentBreakpointRequestCount);
-
-		expect(childClient.sentRequests).toContainEqual(
-			expect.objectContaining({
-				command: "setBreakpoints",
-				args: expect.objectContaining({
-					source: expect.objectContaining({ path: bpFile }),
-					breakpoints: [],
-				}),
-			}),
-		);
-
-		expect(spawnSpy).toHaveBeenCalledTimes(1);
-		expect(connectSpy).toHaveBeenCalledTimes(1);
-
-		const terminateSummary = await manager.terminate();
-
-		expect(terminateSummary?.status).toBe("terminated");
-		expect(manager.listSessions().length).toBe(0);
-		expect(parentClient.isAlive()).toBe(false);
-		expect(childClient.isAlive()).toBe(false);
-	});
-
-	it("resolves relative child cwd before adapter selection and start request", async () => {
-		const manager = new DapSessionManager();
-		const parentCwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-dap-child-cwd-"));
-		const childRelativeCwd = "child-project";
-		const childCwd = path.join(parentCwd, childRelativeCwd);
-		const childPythonPath = path.join(childCwd, ".venv", "bin", "python");
-
-		await fs.mkdir(path.dirname(childPythonPath), { recursive: true });
-		await Bun.write(path.join(childCwd, "pyproject.toml"), '[project]\nname = "child"\n');
-		await Bun.write(childPythonPath, "#!/bin/sh\nexit 0\n");
-		await fs.chmod(childPythonPath, 0o755);
-
-		const parentClient = new FakeDapClient(TEST_ADAPTER, parentCwd);
-		const childClient = new FakeDapClient(TEST_ADAPTER, childCwd);
-		const parentClientWrapper = parentClient as unknown as DapClient;
-		parentClientWrapper.port = 9999;
-
-		const spawnSpy = spyOn(DapClient, "spawn").mockImplementation(async options => {
-			if (options.adapter.name === TEST_ADAPTER.name) {
-				return parentClientWrapper;
-			}
-			return childClient as unknown as DapClient;
-		});
-
-		try {
-			await manager.launch({
-				adapter: TEST_ADAPTER,
-				program: "test.js",
-				cwd: parentCwd,
-			});
-
-			await parentClient.triggerReverseRequest("startDebugging", {
-				request: "attach",
-				configuration: {
-					type: "python",
-					name: "python-child",
-					cwd: childRelativeCwd,
-					port: 5678,
-				},
-			});
-
-			const childSummary = manager.listSessions().find(session => session.parentSessionId === "debug-1");
-			expect(childSummary).toMatchObject({
-				adapter: "debugpy",
-				cwd: childCwd,
-			});
-			expect(spawnSpy.mock.calls[1]?.[0]).toMatchObject({
-				cwd: childCwd,
-				adapter: expect.objectContaining({ name: "debugpy" }),
-			});
-			expect(childClient.sentRequests).toContainEqual(
-				expect.objectContaining({
-					command: "attach",
-					args: expect.objectContaining({
-						type: "python",
-						cwd: childCwd,
-						port: 5678,
-					}),
-				}),
-			);
-		} finally {
-			await manager.terminate().catch(() => undefined);
-			await fs.rm(parentCwd, { recursive: true, force: true });
-		}
-	});
-
-	it("applies pending breakpoints when an adapter does not use configurationDone", async () => {
-		const manager = new DapSessionManager();
-		const client = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		client.supportsConfigurationDoneRequest = false;
-
-		spyOn(DapClient, "spawn").mockImplementation(async () => client as unknown as DapClient);
-
-		const bpFile = path.resolve(process.cwd(), "src/no-configuration-done.ts");
-		await manager.setBreakpoint(bpFile, 42);
-		await manager.launch({
-			adapter: TEST_ADAPTER,
-			program: "test.js",
-			cwd: process.cwd(),
-		});
-
-		expect(client.sentRequests).toContainEqual(
-			expect.objectContaining({
-				command: "setBreakpoints",
-				args: expect.objectContaining({
-					source: expect.objectContaining({ path: bpFile }),
-					breakpoints: expect.arrayContaining([expect.objectContaining({ line: 42 })]),
-				}),
-			}),
-		);
-		expect(client.sentRequests).not.toContainEqual(
-			expect.objectContaining({
-				command: "configurationDone",
-			}),
-		);
-
-		await manager.terminate();
-	});
-
-	it("serializes initial child breakpoint propagation with live source mutations", async () => {
-		const manager = new DapSessionManager();
-		const parentClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const childClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const parentClientWrapper = parentClient as unknown as DapClient;
-		parentClientWrapper.port = 9999;
-
-		spyOn(DapClient, "spawn").mockImplementation(async () => parentClientWrapper);
-		spyOn(DapClient, "connect").mockImplementation(async () => childClient as unknown as DapClient);
-
-		const bpFile = path.resolve(process.cwd(), "src/serialized-child.ts");
-		await manager.setBreakpoint(bpFile, 42);
-		await manager.launch({
-			adapter: TEST_ADAPTER,
-			program: "test.js",
-			cwd: process.cwd(),
-		});
-
-		childClient.commandDelayMs.set("setBreakpoints", 50);
-		const childBreakpointRequests = () => {
-			return childClient.sentRequests.filter(request => {
-				return request.command === "setBreakpoints" && getRequestSourcePath(request.args) === bpFile;
-			});
-		};
-
-		const startDebuggingPromise = parentClient.triggerReverseRequest("startDebugging", {
-			request: "attach",
-			configuration: {
-				type: "pwa-node",
-				name: "child-worker",
-			},
-		});
-
-		for (let attempt = 0; attempt < 50 && childBreakpointRequests().length === 0; attempt++) {
-			await Bun.sleep(1);
-		}
-		expect(
-			childBreakpointRequests().map(request => getSourceBreakpoints(request.args).map(entry => entry.line)),
-		).toEqual([[42]]);
-
-		const mutationPromise = manager.setBreakpoint(bpFile, 100);
-		await Bun.sleep(5);
-		expect(
-			childBreakpointRequests().map(request => getSourceBreakpoints(request.args).map(entry => entry.line)),
-		).toEqual([[42]]);
-
-		await startDebuggingPromise;
-		await mutationPromise;
-		expect(
-			childBreakpointRequests().map(request => getSourceBreakpoints(request.args).map(entry => entry.line)),
-		).toEqual([[42], [42, 100]]);
-
-		await manager.terminate();
-	});
-
-	it("returns a stopped child when launch waits are resolved by the child stop", async () => {
-		const manager = new DapSessionManager();
-		const parentClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const childClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const parentClientWrapper = parentClient as unknown as DapClient;
-		parentClientWrapper.port = 9999;
-		parentClient.emitInitialStopped = false;
-		childClient.commandDelayMs.set("stackTrace", 20);
-
-		spyOn(DapClient, "spawn").mockImplementation(async () => parentClientWrapper);
-		spyOn(DapClient, "connect").mockImplementation(async () => childClient as unknown as DapClient);
-
-		const launchPromise = manager.launch(
-			{
-				adapter: TEST_ADAPTER,
-				program: "test.js",
-				cwd: process.cwd(),
-			},
+		const launched = await manager.launch(
+			{ adapter: TEST_ADAPTER, program: "/tmp/target.js", cwd: "/tmp" },
 			undefined,
 			1_000,
 		);
 
-		await Bun.sleep(1);
-		await parentClient.triggerReverseRequest("startDebugging", {
-			request: "attach",
-			configuration: {
-				type: "pwa-node",
-				name: "child-worker",
-			},
-		});
-
-		const summary = await launchPromise;
-
-		expect(summary).toMatchObject({
-			id: "debug-2",
-			status: "stopped",
-			stopReason: "entry",
-			frameName: "main",
-			line: 1,
-		});
-		expect(childClient.sentRequests.filter(request => request.command === "stackTrace")).toHaveLength(1);
-
-		await manager.terminate();
-	});
-
-	it("returns from child start without waiting for stop capture timeout", async () => {
-		const manager = new DapSessionManager();
-		const parentClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const childClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const parentClientWrapper = parentClient as unknown as DapClient;
-		parentClientWrapper.port = 9999;
-		childClient.emitInitialStopped = false;
-
-		spyOn(DapClient, "spawn").mockImplementation(async () => parentClientWrapper);
-		spyOn(DapClient, "connect").mockImplementation(async () => childClient as unknown as DapClient);
-
-		await manager.launch({
-			adapter: TEST_ADAPTER,
-			program: "test.js",
-			cwd: process.cwd(),
-		});
-
-		const startDebuggingPromise = parentClient.triggerReverseRequest("startDebugging", {
-			request: "attach",
-			configuration: {
-				type: "pwa-node",
-				name: "running-child",
-			},
-		});
-
-		await expect(
-			Promise.race([startDebuggingPromise.then(() => "started"), Bun.sleep(100).then(() => "timeout")]),
-		).resolves.toBe("started");
-		expect(childClient.sentRequests).not.toContainEqual(
-			expect.objectContaining({
-				command: "stackTrace",
-			}),
-		);
-
-		await manager.terminate();
-	});
-
-	it("waits for a stopped child when continuing a threadless js-debug root", async () => {
-		const manager = new DapSessionManager();
-
-		const parentClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const childClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const parentClientWrapper = parentClient as unknown as DapClient;
-		parentClientWrapper.port = 9999;
-
-		spyOn(DapClient, "spawn").mockImplementation(async () => parentClientWrapper);
-		spyOn(DapClient, "connect").mockImplementation(async () => childClient as unknown as DapClient);
-
-		await manager.launch({
-			adapter: TEST_ADAPTER,
-			program: "test.js",
-			cwd: process.cwd(),
-		});
-
-		const continuePromise = manager.continue(undefined, 1_000);
-		await Promise.resolve();
-
-		await parentClient.triggerReverseRequest("startDebugging", {
-			request: "attach",
-			configuration: {
-				type: "pwa-node",
-				name: "child-worker",
-				__pendingTargetId: "target-1",
-			},
-		});
-
-		const outcome = await continuePromise;
-
-		expect(outcome.timedOut).toBe(false);
-		expect(outcome.state).toBe("stopped");
-		expect(outcome.snapshot.id).toBe("debug-2");
-		expect(outcome.snapshot.stopReason).toBe("entry");
-		expect(parentClient.sentRequests).not.toContainEqual(
-			expect.objectContaining({
-				command: "continue",
-			}),
-		);
-		expect(childClient.sentRequests).toContainEqual(
-			expect.objectContaining({
-				command: "stackTrace",
-			}),
-		);
-	});
-
-	it("restores stopped state when continue cannot resolve a thread", async () => {
-		const manager = new DapSessionManager();
-		const adapter: DapResolvedAdapter = {
-			...TEST_ADAPTER,
-			name: "generic-debug-adapter",
-			debugConfigTypes: [],
-			threadlessContinueNeedsChildStopWait: false,
-		};
-		const client = new FakeDapClient(adapter, process.cwd());
-
-		spyOn(DapClient, "spawn").mockImplementation(async () => client as unknown as DapClient);
-
-		await manager.launch({
-			adapter,
-			program: "test.js",
-			cwd: process.cwd(),
-		});
-
-		client.emitEvent("stopped", { reason: "breakpoint" });
-		expect(manager.getActiveSession()).toMatchObject({
-			status: "stopped",
-			stopReason: "breakpoint",
-		});
-
-		await expect(manager.continue(undefined, 10)).rejects.toThrow("Debugger reported no threads.");
-
-		expect(manager.getActiveSession()).toMatchObject({
-			status: "stopped",
-			stopReason: "breakpoint",
-		});
-		expect(client.sentRequests).not.toContainEqual(
-			expect.objectContaining({
-				command: "continue",
-			}),
-		);
-
-		await manager.terminate();
-	});
-
-	it("disposes the session tree when termination requests time out", async () => {
-		const manager = new DapSessionManager();
-
-		const parentClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const childClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const parentClientWrapper = parentClient as unknown as DapClient;
-		parentClientWrapper.port = 9999;
-
-		spyOn(DapClient, "spawn").mockImplementation(async () => parentClientWrapper);
-		spyOn(DapClient, "connect").mockImplementation(async () => childClient as unknown as DapClient);
-
-		await manager.launch({
-			adapter: TEST_ADAPTER,
-			program: "test.js",
-			cwd: process.cwd(),
-		});
-
-		await parentClient.triggerReverseRequest("startDebugging", {
-			request: "attach",
-			configuration: {
-				type: "pwa-node",
-				name: "child-worker",
-			},
-		});
-
-		parentClient.stalledCommands.add("disconnect");
-		childClient.stalledCommands.add("disconnect");
-
-		await manager.terminate(AbortSignal.timeout(5), 30_000);
-
-		expect(manager.listSessions().length).toBe(0);
-		expect(parentClient.isAlive()).toBe(false);
-		expect(childClient.isAlive()).toBe(false);
-	});
-
-	it("waits for termination before disposing a session tree after the root debuggee exits", async () => {
-		const manager = new DapSessionManager();
-
-		const parentClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const childClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const parentClientWrapper = parentClient as unknown as DapClient;
-		parentClientWrapper.port = 9999;
-
-		spyOn(DapClient, "spawn").mockImplementation(async () => parentClientWrapper);
-		spyOn(DapClient, "connect").mockImplementation(async () => childClient as unknown as DapClient);
-
-		await manager.launch({
-			adapter: TEST_ADAPTER,
-			program: "test.js",
-			cwd: process.cwd(),
-		});
-
-		await parentClient.triggerReverseRequest("startDebugging", {
-			request: "attach",
-			configuration: {
-				type: "pwa-node",
-				name: "child-worker",
-			},
-		});
-
-		parentClient.emitEvent("exited", { exitCode: 0 });
-		await Bun.sleep(10);
-
-		expect(manager.listSessions().length).toBe(2);
-		expect(parentClient.isAlive()).toBe(true);
-		expect(childClient.isAlive()).toBe(true);
-
-		parentClient.emitEvent("terminated", {});
-		await Bun.sleep(10);
-
-		expect(manager.listSessions().length).toBe(0);
-		expect(parentClient.isAlive()).toBe(false);
-		expect(childClient.isAlive()).toBe(false);
-	});
-
-	it("keeps trailing output after exited until the terminated event arrives", async () => {
-		const manager = new DapSessionManager();
-		const parentClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-
-		spyOn(DapClient, "spawn").mockImplementation(async () => parentClient as unknown as DapClient);
-
-		await manager.launch({
-			adapter: TEST_ADAPTER,
-			program: "test.js",
-			cwd: process.cwd(),
-		});
-
-		parentClient.emitEvent("exited", { exitCode: 0 });
-		parentClient.emitEvent("output", { output: "final vitest line\n" });
-		await Bun.sleep(10);
-
-		expect(manager.getOutput().output).toContain("final vitest line");
-		expect(manager.listSessions().length).toBe(1);
-		expect(parentClient.isAlive()).toBe(true);
-
-		parentClient.emitEvent("terminated", {});
-		await Bun.sleep(10);
-
-		expect(manager.listSessions().length).toBe(0);
-		expect(parentClient.isAlive()).toBe(false);
-	});
-
-	it("rolls back pending source breakpoints when live sync fails", async () => {
-		const manager = new DapSessionManager();
-		const parentClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const childClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const parentClientWrapper = parentClient as unknown as DapClient;
-		parentClientWrapper.port = 9999;
-
-		spyOn(DapClient, "spawn").mockImplementation(async () => parentClientWrapper);
-		spyOn(DapClient, "connect").mockImplementation(async () => childClient as unknown as DapClient);
-
-		await manager.launch({
-			adapter: TEST_ADAPTER,
-			program: "test.js",
-			cwd: process.cwd(),
-		});
-
-		const bpFile = path.resolve(process.cwd(), "src/failed-sync.ts");
-		parentClient.stalledCommands.add("setBreakpoints");
-
-		await expect(manager.setBreakpoint(bpFile, 12, undefined, AbortSignal.timeout(5), 30_000)).rejects.toThrow(
-			"aborted",
-		);
-
-		parentClient.stalledCommands.delete("setBreakpoints");
-
-		await parentClient.triggerReverseRequest("startDebugging", {
-			request: "attach",
-			configuration: {
-				type: "pwa-node",
-				name: "child-worker",
-			},
-		});
-
-		expect(childClient.sentRequests).not.toContainEqual(
-			expect.objectContaining({
-				command: "setBreakpoints",
-				args: expect.objectContaining({
-					source: expect.objectContaining({ path: bpFile }),
-				}),
-			}),
-		);
-
-		await manager.terminate();
-	});
-
-	it("does not let inactive running parents block active child breakpoint sync", async () => {
-		const manager = new DapSessionManager();
-		const parentClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const childClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const parentClientWrapper = parentClient as unknown as DapClient;
-		parentClientWrapper.port = 9999;
-
-		spyOn(DapClient, "spawn").mockImplementation(async () => parentClientWrapper);
-		spyOn(DapClient, "connect").mockImplementation(async () => childClient as unknown as DapClient);
-
-		await manager.launch({
-			adapter: TEST_ADAPTER,
-			program: "test.js",
-			cwd: process.cwd(),
-		});
-
-		await parentClient.triggerReverseRequest("startDebugging", {
-			request: "attach",
-			configuration: {
-				type: "pwa-node",
-				name: "child-worker",
-			},
-		});
-
-		const bpFile = path.resolve(process.cwd(), "src/partial-sync.ts");
-		parentClient.stalledCommands.add("setBreakpoints");
-
-		const result = await manager.setBreakpoint(bpFile, 21, undefined, AbortSignal.timeout(50), 30_000);
-
-		expect(result.snapshot?.id).toBe("debug-2");
-		expect(childClient.sentRequests).toContainEqual(
-			expect.objectContaining({
-				command: "setBreakpoints",
-				args: expect.objectContaining({
-					source: expect.objectContaining({ path: bpFile }),
-					breakpoints: expect.arrayContaining([expect.objectContaining({ line: 21 })]),
-				}),
-			}),
-		);
-		expect(parentClient.sentRequests).not.toContainEqual(
-			expect.objectContaining({
-				command: "setBreakpoints",
-				args: expect.objectContaining({
-					source: expect.objectContaining({ path: bpFile }),
-				}),
-			}),
-		);
-
-		await manager.terminate();
-	});
-
-	it("rolls back pending function breakpoints when live sync fails", async () => {
-		const manager = new DapSessionManager();
-		const parentClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const childClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const parentClientWrapper = parentClient as unknown as DapClient;
-		parentClientWrapper.port = 9999;
-
-		spyOn(DapClient, "spawn").mockImplementation(async () => parentClientWrapper);
-		spyOn(DapClient, "connect").mockImplementation(async () => childClient as unknown as DapClient);
-
-		await manager.launch({
-			adapter: TEST_ADAPTER,
-			program: "test.js",
-			cwd: process.cwd(),
-		});
-
-		parentClient.stalledCommands.add("setFunctionBreakpoints");
-
-		await expect(
-			manager.setFunctionBreakpoint("workerMain", undefined, AbortSignal.timeout(5), 30_000),
-		).rejects.toThrow("aborted");
-
-		parentClient.stalledCommands.delete("setFunctionBreakpoints");
-
-		await parentClient.triggerReverseRequest("startDebugging", {
-			request: "attach",
-			configuration: {
-				type: "pwa-node",
-				name: "child-worker",
-			},
-		});
-
-		expect(childClient.sentRequests).not.toContainEqual(
-			expect.objectContaining({
-				command: "setFunctionBreakpoints",
-			}),
-		);
-
-		await manager.terminate();
-	});
-
-	it("removes all live instruction breakpoints for a reference when offset is omitted", async () => {
-		const manager = new DapSessionManager();
-
-		const parentClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-
-		spyOn(DapClient, "spawn").mockImplementation(async () => parentClient as unknown as DapClient);
-
-		await manager.launch({
-			adapter: TEST_ADAPTER,
-			program: "test.js",
-			cwd: process.cwd(),
-		});
-
-		await manager.setInstructionBreakpoint("instruction-1", 4);
-		await manager.setInstructionBreakpoint("instruction-1", 8);
-
-		const removeResult = await manager.removeInstructionBreakpoint("instruction-1");
-
-		expect(removeResult.breakpoints).toEqual([]);
-		expect(
-			parentClient.sentRequests.filter(request => request.command === "setInstructionBreakpoints").at(-1),
-		).toEqual({
-			command: "setInstructionBreakpoints",
-			args: { breakpoints: [] },
-		});
-
-		await manager.terminate();
-	});
-
-	it("refreshes the root session timestamp when the active child is used", async () => {
-		const manager = new DapSessionManager();
-
-		const parentClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const childClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const parentClientWrapper = parentClient as unknown as DapClient;
-		parentClientWrapper.port = 9999;
-
-		spyOn(DapClient, "spawn").mockImplementation(async () => parentClientWrapper);
-		spyOn(DapClient, "connect").mockImplementation(async () => childClient as unknown as DapClient);
-
-		await manager.launch({
-			adapter: TEST_ADAPTER,
-			program: "test.js",
-			cwd: process.cwd(),
-		});
-
-		await parentClient.triggerReverseRequest("startDebugging", {
-			request: "attach",
-			configuration: {
-				type: "pwa-node",
-				name: "child-worker",
-			},
-		});
-
-		const rootBefore = manager.listSessions().find(session => session.id === "debug-1")?.lastUsedAt;
-		if (rootBefore === undefined) {
-			throw new Error("Expected root debug session to exist");
-		}
-
-		await Bun.sleep(20);
-		manager.getOutput();
-
-		const rootAfter = manager.listSessions().find(session => session.id === "debug-1")?.lastUsedAt;
-		if (rootAfter === undefined) {
-			throw new Error("Expected root debug session to exist");
-		}
-		expect(Date.parse(rootAfter)).toBeGreaterThan(Date.parse(rootBefore));
-
-		await manager.terminate();
-	});
-
-	it("skips closed child sessions during global breakpoint sync", async () => {
-		const manager = new DapSessionManager();
-
-		const parentClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const childClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const parentClientWrapper = parentClient as unknown as DapClient;
-		parentClientWrapper.port = 9999;
-
-		spyOn(DapClient, "spawn").mockImplementation(async () => parentClientWrapper);
-		spyOn(DapClient, "connect").mockImplementation(async () => childClient as unknown as DapClient);
-
-		await manager.launch({
-			adapter: TEST_ADAPTER,
-			program: "test.js",
-			cwd: process.cwd(),
-		});
-
-		await parentClient.triggerReverseRequest("startDebugging", {
-			request: "attach",
-			configuration: {
-				type: "pwa-node",
-				name: "child-worker",
-			},
-		});
-
-		const childRequestCount = childClient.sentRequests.length;
-		const parentRequestCount = parentClient.sentRequests.length;
-
-		await childClient.dispose();
-
-		await manager.setBreakpoint(path.resolve(process.cwd(), "src/worker.ts"), 12);
-		await manager.setFunctionBreakpoint("workerMain");
-		await manager.setInstructionBreakpoint("instruction-1", 4);
-		await manager.setDataBreakpoint("data-1");
-
-		expect(childClient.sentRequests.length).toBe(childRequestCount);
-		expect(manager.listSessions().map(session => session.id)).toEqual(["debug-1"]);
-		expect(parentClient.sentRequests.slice(parentRequestCount).map(request => request.command)).toEqual([
-			"setBreakpoints",
-			"setFunctionBreakpoints",
-			"setInstructionBreakpoints",
-			"setDataBreakpoints",
+		expect(launched.status).toBe("stopped");
+		expect(launched.parentSessionId).toBeDefined();
+		expect(launched.line).toBe(2);
+		expect(manager.listSessions()).toHaveLength(3);
+
+		const breakpoint = await manager.setBreakpoint("/tmp/target.js", 2, undefined, undefined, 1_000);
+		expect(breakpoint.breakpoints).toEqual([
+			{ line: 2, condition: undefined, id: 0, verified: true, message: undefined },
 		]);
+		for (const client of [root, child, grandchild]) {
+			expect(client.requests.filter(request => request.command === "setBreakpoints")).toHaveLength(1);
+		}
 
-		await manager.terminate();
-	});
-
-	it("blocks new top-level launches when the active child has terminated but its root is alive", async () => {
-		const manager = new DapSessionManager();
-
-		const parentClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const childClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const parentClientWrapper = parentClient as unknown as DapClient;
-		parentClientWrapper.port = 9999;
-
-		const spawnSpy = spyOn(DapClient, "spawn").mockImplementation(async () => parentClientWrapper);
-		spyOn(DapClient, "connect").mockImplementation(async () => childClient as unknown as DapClient);
-
-		await manager.launch({
-			adapter: TEST_ADAPTER,
-			program: "test.js",
-			cwd: process.cwd(),
-		});
-
-		await parentClient.triggerReverseRequest("startDebugging", {
-			request: "attach",
-			configuration: {
-				type: "pwa-node",
-				name: "child-worker",
-			},
-		});
-
-		childClient.emitEvent("terminated", {});
-
-		await expect(
-			manager.launch({
-				adapter: TEST_ADAPTER,
-				program: "other.js",
-				cwd: process.cwd(),
-			}),
-		).rejects.toThrow("Debug session debug-1 is still active for this agent. Terminate it before launching another.");
-
-		expect(spawnSpy).toHaveBeenCalledTimes(1);
-
-		await manager.terminate();
-		expect(manager.listSessions().length).toBe(0);
-	});
-
-	it("returns the requested child session summary when terminating a debug tree", async () => {
-		const manager = new DapSessionManager();
-		const parentClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const childClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const parentClientWrapper = parentClient as unknown as DapClient;
-		parentClientWrapper.port = 9999;
-
-		spyOn(DapClient, "spawn").mockImplementation(async () => parentClientWrapper);
-		spyOn(DapClient, "connect").mockImplementation(async () => childClient as unknown as DapClient);
-
-		await manager.launch({
-			ownerId: "agent-a",
-			adapter: TEST_ADAPTER,
-			program: "test.js",
-			cwd: process.cwd(),
-		});
-		await parentClient.triggerReverseRequest("startDebugging", {
-			request: "attach",
-			configuration: {
-				type: "pwa-node",
-				name: "child-worker",
-			},
-		});
-
-		const child = manager.listSessions().find(session => session.parentSessionId === "debug-1");
-		expect(child?.id).toBe("debug-2");
-
-		const terminated = await manager.terminate(undefined, undefined, { ownerId: "agent-a", sessionId: "debug-2" });
-		expect(terminated?.id).toBe("debug-2");
-		expect(terminated?.status).toBe("terminated");
+		await manager.terminate(undefined, 1_000);
 		expect(manager.listSessions()).toEqual([]);
+		for (const client of [root, child, grandchild]) {
+			expect(client.requests.some(request => request.command === "disconnect")).toBe(true);
+			expect(client.disposed).toBe(true);
+		}
 	});
 
-	it("allows parallel top-level sessions for different owners", async () => {
-		const manager = new DapSessionManager();
-		const firstClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const secondClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const clients = [firstClient, secondClient];
-		const spawnSpy = spyOn(DapClient, "spawn").mockImplementation(async () => {
-			const client = clients.shift();
-			if (!client) throw new Error("unexpected spawn");
-			return client as unknown as DapClient;
-		});
-
-		const first = await manager.launch({
-			ownerId: "agent-a",
-			adapter: TEST_ADAPTER,
-			program: "first.js",
-			cwd: process.cwd(),
-		});
-		const second = await manager.launch({
-			ownerId: "agent-b",
-			adapter: TEST_ADAPTER,
-			program: "second.js",
-			cwd: process.cwd(),
-		});
-
-		expect(first.id).toBe("debug-1");
-		expect(second.id).toBe("debug-2");
-		expect(manager.getActiveSession("agent-a")?.id).toBe("debug-1");
-		expect(manager.getActiveSession("agent-b")?.id).toBe("debug-2");
-		await expect(
-			manager.launch({
-				ownerId: "agent-a",
-				adapter: TEST_ADAPTER,
-				program: "third.js",
-				cwd: process.cwd(),
-			}),
-		).rejects.toThrow("Debug session debug-1 is still active for this agent. Terminate it before launching another.");
-		expect(spawnSpy).toHaveBeenCalledTimes(2);
-
-		await manager.terminate(undefined, undefined, { ownerId: "agent-a" });
-		await manager.terminate(undefined, undefined, { ownerId: "agent-b" });
-	});
-
-	it("scopes pending breakpoints by owner and clears them on termination", async () => {
-		const manager = new DapSessionManager();
-		const firstClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const secondClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const restartedFirstClient = new FakeDapClient(TEST_ADAPTER, process.cwd());
-		const clients = [firstClient, secondClient, restartedFirstClient];
-		spyOn(DapClient, "spawn").mockImplementation(async () => {
-			const client = clients.shift();
-			if (!client) throw new Error("unexpected spawn");
-			return client as unknown as DapClient;
-		});
-
-		const bpFile = path.resolve(process.cwd(), "src/owner-scoped.ts");
-		await manager.setBreakpoint(bpFile, 42, undefined, undefined, undefined, { ownerId: "agent-a" });
-		await manager.setBreakpoint(bpFile, 100, undefined, undefined, undefined, { ownerId: "agent-b" });
-
-		await manager.launch({
-			ownerId: "agent-a",
-			adapter: TEST_ADAPTER,
-			program: "first.js",
-			cwd: process.cwd(),
-		});
-		await manager.launch({
-			ownerId: "agent-b",
-			adapter: TEST_ADAPTER,
-			program: "second.js",
-			cwd: process.cwd(),
-		});
-
-		const firstBreakpointRequests = firstClient.sentRequests.filter(request => request.command === "setBreakpoints");
-		const secondBreakpointRequests = secondClient.sentRequests.filter(
-			request => request.command === "setBreakpoints",
+	it("targets a running attach child before it emits a stopped event", async () => {
+		const root = new FakeDapClient(
+			{
+				name: "attached.js",
+				type: "pwa-node",
+				__pendingTargetId: "attached-child",
+			},
+			"attach",
 		);
-		expect(
-			firstBreakpointRequests.map(request => getSourceBreakpoints(request.args).map(entry => entry.line)),
-		).toEqual([[42]]);
-		expect(
-			secondBreakpointRequests.map(request => getSourceBreakpoints(request.args).map(entry => entry.line)),
-		).toEqual([[100]]);
+		const child = new FakeDapClient(undefined, "launch", false);
+		spyOn(DapClient, "spawn").mockResolvedValue(root as unknown as DapClient);
+		spyOn(DapClient, "connect").mockResolvedValue(child as unknown as DapClient);
+		const manager = new DapSessionManager();
 
-		await manager.terminate(undefined, undefined, { ownerId: "agent-a" });
-		await manager.launch({
-			ownerId: "agent-a",
-			adapter: TEST_ADAPTER,
-			program: "first-again.js",
-			cwd: process.cwd(),
+		await manager.launch({ adapter: TEST_ADAPTER, program: "/tmp/attached.js", cwd: "/tmp" }, undefined, 25);
+		const active = manager.getActiveSession();
+		const threads = await manager.threads(undefined, 100);
+
+		expect(active?.parentSessionId).toBeDefined();
+		expect(threads.threads).toEqual([{ id: 7, name: "target.js" }]);
+		expect(child.requests.filter(request => request.command === "threads")).toHaveLength(1);
+		expect(root.requests.filter(request => request.command === "threads")).toHaveLength(0);
+
+		await manager.terminate(undefined, 100);
+	});
+
+	it("reactivates a live session when the active child terminates", async () => {
+		const root = new FakeDapClient({
+			name: "target.js",
+			type: "pwa-node",
+			__pendingTargetId: "child",
 		});
-		expect(restartedFirstClient.sentRequests.some(request => request.command === "setBreakpoints")).toBe(false);
+		const child = new FakeDapClient();
+		spyOn(DapClient, "spawn").mockResolvedValue(root as unknown as DapClient);
+		spyOn(DapClient, "connect").mockResolvedValue(child as unknown as DapClient);
+		const manager = new DapSessionManager();
 
-		await manager.terminate(undefined, undefined, { ownerId: "agent-a" });
-		await manager.terminate(undefined, undefined, { ownerId: "agent-b" });
+		const launched = await manager.launch(
+			{ adapter: TEST_ADAPTER, program: "/tmp/target.js", cwd: "/tmp" },
+			undefined,
+			1_000,
+		);
+		expect(launched.parentSessionId).toBeDefined();
+
+		child.emit("terminated", {});
+		await child.dispose();
+
+		const active = manager.getActiveSession();
+		expect(active).not.toBeNull();
+		expect(active?.id).not.toBe(launched.id);
+		expect(active?.status).not.toBe("terminated");
+
+		const threads = await manager.threads(undefined, 100);
+		expect(threads.threads).toEqual([{ id: 7, name: "target.js" }]);
+		expect(root.requests.filter(request => request.command === "threads")).toHaveLength(1);
+
+		await manager.terminate(undefined, 100);
 	});
 });

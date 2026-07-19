@@ -505,9 +505,9 @@ export interface DapAdapterConfig {
 	launchDefaults?: Record<string, unknown>;
 	attachDefaults?: Record<string, unknown>;
 	/** "stdio" (default): communicate via stdin/stdout pipes.
-	 *  "socket": adapter uses a network socket instead of stdio.
-	 *  On Linux, connects via a unix domain socket.
-	 *  On macOS, the adapter dials into a local TCP listener (--client-addr). */
+	/** "stdio" (default): communicate via stdin/stdout pipes.
+	 *  "socket": adapter-specific socket launch (currently Delve).
+	 *  "tcp": spawn a DAP server with `${port}` substituted in `args`, then connect to it. */
 	connectMode?: "stdio" | "socket" | "tcp";
 	/** Some root adapters report no threads during continue while child sessions
 	 * own the stopped state; when true, continue waits for a child stop instead. */

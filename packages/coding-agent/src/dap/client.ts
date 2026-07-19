@@ -45,7 +45,8 @@ export class DapClient {
 	readonly adapter: DapResolvedAdapter;
 	readonly cwd: string;
 	readonly proc: DapClientState["proc"];
-	port?: number;
+	/** TCP server port reused by child DAP sessions. */
+	readonly port?: number;
 	/** ReadableStream of DAP bytes — from proc.stdout (stdio) or a socket (socket mode). */
 	readonly #readable: ReadableStream<Uint8Array>;
 	/** Write sink — proc.stdin (stdio) or a socket (socket mode). */
@@ -71,7 +72,12 @@ export class DapClient {
 		adapter: DapResolvedAdapter,
 		cwd: string,
 		proc: DapClientState["proc"],
-		options?: { readable?: ReadableStream<Uint8Array>; writeSink?: DapWriteSink; socket?: { end(): void } },
+		options?: {
+			readable?: ReadableStream<Uint8Array>;
+			writeSink?: DapWriteSink;
+			socket?: { end(): void };
+			port?: number;
+		},
 	) {
 		this.adapter = adapter;
 		this.cwd = cwd;
@@ -79,6 +85,7 @@ export class DapClient {
 		this.#readable = options?.readable ?? (proc.stdout as ReadableStream<Uint8Array>);
 		this.#writeSink = options?.writeSink ?? proc.stdin;
 		this.#socket = options?.socket;
+		this.port = options?.port;
 		this.proc.exited.then(
 			() => this.#rejectPendingWritesForExit(),
 			() => this.#rejectPendingWritesForExit(),
@@ -126,6 +133,7 @@ export class DapClient {
 		void client.#startMessageReader();
 		return client;
 	}
+
 
 	get capabilities(): DapCapabilities | undefined {
 		return this.#capabilities;
@@ -578,4 +586,5 @@ export class DapClient {
 			waiter.reject(error);
 		}
 	}
+
 }

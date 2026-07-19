@@ -26,7 +26,6 @@ import {
 	type DapResolvedAdapter,
 	type DapScope,
 	type DapSessionSummary,
-	type DapSessionTarget,
 	type DapSource,
 	type DapStackFrame,
 	type DapThread,
@@ -111,11 +110,8 @@ const debugSchema = type({
 	action: debugActionSchema,
 	"program?": type("string").describe("debug target path; Delve accepts Go package directories"),
 	"args?": type("string[]").describe("program arguments"),
-	"adapter?": type("string").describe(
-		"debugger adapter id (bun, gdb, lldb-dap, debugpy, dlv, js-debug-adapter, rdbg, or dap.json entry)",
-	),
+	"adapter?": type("string").describe("configured adapter id (gdb, lldb-dap, debugpy, dlv, rdbg, or dap.json entry)"),
 	cwd: "string?",
-	session_id: "string?",
 	"file?": type("string").describe("source file"),
 	"line?": type("number").describe("source line"),
 	"function?": type("string").describe("function name"),
@@ -130,9 +126,6 @@ const debugSchema = type({
 	"pid?": type("number").describe("process id for attach"),
 	"port?": type("number").describe("remote attach port"),
 	"host?": type("string").describe("remote attach host"),
-	"url?": type("string").describe("remote attach URL"),
-	"inspector_url?": type("string").describe("Bun inspector WebSocket URL"),
-	"path?": type("string").describe("remote attach URL path"),
 	"levels?": type("number").describe("max stack frames"),
 	"memory_reference?": type("string").describe("memory reference or address"),
 	instruction_reference: "string?",
@@ -197,7 +190,6 @@ function formatLocation(snapshot: DapSessionSummary | undefined): string | null 
 function formatSessionSnapshot(snapshot: DapSessionSummary): string[] {
 	const lines = [
 		`Session ${snapshot.id}`,
-		`Owner: ${snapshot.ownerId}`,
 		`Adapter: ${snapshot.adapter}`,
 		`Status: ${snapshot.status}`,
 		`CWD: ${snapshot.cwd}`,
@@ -205,7 +197,6 @@ function formatSessionSnapshot(snapshot: DapSessionSummary): string[] {
 	if (snapshot.program) lines.push(`Program: ${snapshot.program}`);
 	if (snapshot.stopReason) lines.push(`Stop reason: ${snapshot.stopReason}`);
 	if (snapshot.frameName) lines.push(`Frame: ${snapshot.frameName}`);
-	if (snapshot.frameId !== undefined) lines.push(`Frame id: #${snapshot.frameId}`);
 	if (snapshot.instructionPointerReference) {
 		lines.push(`Instruction pointer: ${snapshot.instructionPointerReference}`);
 	}
@@ -226,7 +217,7 @@ function formatBreakpoints(filePath: string, breakpoints: DapBreakpointRecord[])
 	}
 	for (const breakpoint of breakpoints) {
 		lines.push(
-			`- line ${breakpoint.line}: ${breakpoint.verified ? "verified" : "pending"}${breakpoint.condition ? ` if ${breakpoint.condition}` : ""}${breakpoint.hitCondition ? ` after ${breakpoint.hitCondition}` : ""}${breakpoint.message ? ` (${breakpoint.message})` : ""}`,
+			`- line ${breakpoint.line}: ${breakpoint.verified ? "verified" : "pending"}${breakpoint.condition ? ` if ${breakpoint.condition}` : ""}${breakpoint.message ? ` (${breakpoint.message})` : ""}`,
 		);
 	}
 	return lines.join("\n");
@@ -465,7 +456,6 @@ function formatSessions(sessions: DapSessionSummary[]): string {
 			return [
 				`${session.id}: ${session.status}`,
 				`  adapter=${session.adapter}`,
-				`  owner=${session.ownerId}`,
 				`  cwd=${session.cwd}`,
 				...(session.program ? [`  program=${session.program}`] : []),
 				...(location ? [`  location=${location}`] : []),
@@ -514,12 +504,15 @@ const ADAPTER_UNAVAILABLE_MESSAGES: Readonly<Record<string, string>> = {
 	debugpy: "adapter 'debugpy' is not available: python not found in PATH",
 	dlv: "adapter 'dlv' is not available: install with 'go install github.com/go-delve/delve/cmd/dlv@latest'",
 	rdbg: "adapter 'rdbg' is not available: install with 'gem install debug'",
+	"js-debug-adapter":
+		"adapter 'js-debug-adapter' is not available: install vscode-js-debug with Mason or set JS_DEBUG_DAP_SERVER to dapDebugServer.js",
 };
 
 const ADAPTER_CANONICAL_COMMANDS: Readonly<Record<string, string>> = {
 	debugpy: "python",
 	dlv: "dlv",
 	rdbg: "rdbg",
+	"js-debug-adapter": "js-debug-adapter",
 };
 
 function formatAdapterUnavailable(adapterName: string, command: string, cwd: string): string {
@@ -559,35 +552,27 @@ function validateLaunchProgram(
 
 interface DebugRenderArgs extends Partial<DebugParams> {}
 
-function getDebugOwnerId(session: ToolSession): string {
-	return session.getSessionId?.() ?? session.getAgentId?.() ?? session.getSessionFile?.() ?? session.cwd;
-}
-
-function getActiveSessionSnapshot(target: DapSessionTarget): DapSessionSummary {
-	const snapshot = dapSessionManager.getSession(target);
+function getActiveSessionSnapshot(): DapSessionSummary {
+	const snapshot = dapSessionManager.getActiveSession();
 	if (!snapshot) {
 		throw new ToolError("No active debug session. Launch or attach first.");
 	}
 	return snapshot;
 }
 
-function requireCapability(
-	target: DapSessionTarget,
-	capability: keyof DapCapabilities,
-	description: string,
-): DapSessionSummary {
-	const snapshot = getActiveSessionSnapshot(target);
-	if (dapSessionManager.getCapabilities(target)?.[capability] !== true) {
+function requireCapability(capability: keyof DapCapabilities, description: string): DapSessionSummary {
+	const snapshot = getActiveSessionSnapshot();
+	if (dapSessionManager.getCapabilities()?.[capability] !== true) {
 		throw new ToolError(`Current adapter does not support ${description}`);
 	}
 	return snapshot;
 }
 
-function resolveDisassemblyReference(memoryReference: string | undefined, target: DapSessionTarget): string {
+function resolveDisassemblyReference(memoryReference: string | undefined): string {
 	if (memoryReference) {
 		return memoryReference;
 	}
-	const snapshot = getActiveSessionSnapshot(target);
+	const snapshot = getActiveSessionSnapshot();
 	if (snapshot.instructionPointerReference) {
 		return snapshot.instructionPointerReference;
 	}
@@ -717,21 +702,8 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 			note: '1. debug(action: "launch", program: "./my_app")\n2. debug(action: "set_breakpoint", file: "src/main.c", line: 42)\n3. debug(action: "continue")\n4. If the program appears hung: debug(action: "pause")\n5. Inspect state with `threads`, `stack_trace`, `scopes`, and `variables`',
 		},
 		{
-			caption: "Launch a Bun script",
-			call: { action: "launch", adapter: "bun", program: "src/index.ts" },
-		},
-		{
 			caption: "Launch a Python script with debugpy",
 			call: { action: "launch", adapter: "debugpy", program: "scripts/job.py", args: ["--flag"] },
-		},
-		{
-			caption: "Launch a Vitest test with js-debug-adapter",
-			call: {
-				action: "launch",
-				adapter: "js-debug-adapter",
-				program: "./node_modules/vitest/vitest.mjs",
-				args: ["run", "--config", "vitest.config.ts", "--reporter=minimal", "src/example.test.ts"],
-			},
 		},
 		{
 			caption: "Raw debugger command through repl",
@@ -761,8 +733,6 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 		const timeoutSignal = AbortSignal.timeout(timeoutSec * 1000);
 		const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 		const details: DebugToolDetails = { action: params.action, success: true };
-		const ownerId = getDebugOwnerId(this.session);
-		const target: DapSessionTarget = params.session_id ? { ownerId, sessionId: params.session_id } : { ownerId };
 		const result = toolResult(details);
 		switch (params.action) {
 			case "launch": {
@@ -785,7 +755,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 				validateLaunchProgram(program, commandCwd, programKind, adapter);
 				const extraLaunchArguments = resolveLaunchOverrides(adapter, program, programKind);
 				const snapshot = await dapSessionManager.launch(
-					{ ownerId, adapter, program, args: params.args, cwd: commandCwd, extraLaunchArguments },
+					{ adapter, program, args: params.args, cwd: commandCwd, extraLaunchArguments },
 					combinedSignal,
 					timeoutSec * 1000,
 				);
@@ -811,7 +781,6 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 				}
 				const snapshot = await dapSessionManager.attach(
 					{
-						ownerId,
 						adapter,
 						cwd: commandCwd,
 						pid: params.pid,
@@ -834,7 +803,6 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 						params.condition,
 						combinedSignal,
 						timeoutSec * 1000,
-						target,
 					);
 					details.snapshot = response.snapshot;
 					details.functionBreakpoints = response.breakpoints;
@@ -850,8 +818,6 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					params.condition,
 					combinedSignal,
 					timeoutSec * 1000,
-					target,
-					{ hitCondition: params.hit_condition },
 				);
 				details.snapshot = response.snapshot;
 				details.breakpoints = response.breakpoints;
@@ -863,7 +829,6 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 						params.function,
 						combinedSignal,
 						timeoutSec * 1000,
-						target,
 					);
 					details.snapshot = response.snapshot;
 					details.functionBreakpoints = response.breakpoints;
@@ -878,14 +843,13 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					params.line,
 					combinedSignal,
 					timeoutSec * 1000,
-					target,
 				);
 				details.snapshot = response.snapshot;
 				details.breakpoints = response.breakpoints;
 				return result.text(formatBreakpoints(response.sourcePath, response.breakpoints)).done();
 			}
 			case "set_instruction_breakpoint": {
-				requireCapability(target, "supportsInstructionBreakpoints", "instruction breakpoints");
+				requireCapability("supportsInstructionBreakpoints", "instruction breakpoints");
 				if (!params.instruction_reference) {
 					throw new ToolError("instruction_reference is required for set_instruction_breakpoint");
 				}
@@ -896,14 +860,13 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					params.hit_condition,
 					combinedSignal,
 					timeoutSec * 1000,
-					target,
 				);
 				details.snapshot = response.snapshot;
 				details.instructionBreakpoints = response.breakpoints;
 				return result.text(formatInstructionBreakpoints(response.breakpoints)).done();
 			}
 			case "remove_instruction_breakpoint": {
-				requireCapability(target, "supportsInstructionBreakpoints", "instruction breakpoints");
+				requireCapability("supportsInstructionBreakpoints", "instruction breakpoints");
 				if (!params.instruction_reference) {
 					throw new ToolError("instruction_reference is required for remove_instruction_breakpoint");
 				}
@@ -912,14 +875,13 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					params.offset,
 					combinedSignal,
 					timeoutSec * 1000,
-					target,
 				);
 				details.snapshot = response.snapshot;
 				details.instructionBreakpoints = response.breakpoints;
 				return result.text(formatInstructionBreakpoints(response.breakpoints)).done();
 			}
 			case "data_breakpoint_info": {
-				requireCapability(target, "supportsDataBreakpoints", "data breakpoints");
+				requireCapability("supportsDataBreakpoints", "data breakpoints");
 				if (!params.name) {
 					throw new ToolError("name is required for data_breakpoint_info");
 				}
@@ -929,14 +891,13 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					params.frame_id,
 					combinedSignal,
 					timeoutSec * 1000,
-					target,
 				);
 				details.snapshot = response.snapshot;
 				details.dataBreakpointInfo = response.info;
 				return result.text(formatDataBreakpointInfo(response.info)).done();
 			}
 			case "set_data_breakpoint": {
-				requireCapability(target, "supportsDataBreakpoints", "data breakpoints");
+				requireCapability("supportsDataBreakpoints", "data breakpoints");
 				if (!params.data_id) {
 					throw new ToolError("data_id is required for set_data_breakpoint");
 				}
@@ -947,14 +908,13 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					params.hit_condition,
 					combinedSignal,
 					timeoutSec * 1000,
-					target,
 				);
 				details.snapshot = response.snapshot;
 				details.dataBreakpoints = response.breakpoints;
 				return result.text(formatDataBreakpoints(response.breakpoints)).done();
 			}
 			case "remove_data_breakpoint": {
-				requireCapability(target, "supportsDataBreakpoints", "data breakpoints");
+				requireCapability("supportsDataBreakpoints", "data breakpoints");
 				if (!params.data_id) {
 					throw new ToolError("data_id is required for remove_data_breakpoint");
 				}
@@ -962,50 +922,43 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					params.data_id,
 					combinedSignal,
 					timeoutSec * 1000,
-					target,
 				);
 				details.snapshot = response.snapshot;
 				details.dataBreakpoints = response.breakpoints;
 				return result.text(formatDataBreakpoints(response.breakpoints)).done();
 			}
 			case "continue": {
-				const outcome = await dapSessionManager.continue(combinedSignal, timeoutSec * 1000, target);
+				const outcome = await dapSessionManager.continue(combinedSignal, timeoutSec * 1000);
 				details.snapshot = outcome.snapshot;
 				details.state = outcome.state;
 				details.timedOut = outcome.timedOut;
 				return result.text(buildOutcomeText(outcome, timeoutSec, "Continue")).done();
 			}
 			case "step_over": {
-				const outcome = await dapSessionManager.stepOver(combinedSignal, timeoutSec * 1000, target);
+				const outcome = await dapSessionManager.stepOver(combinedSignal, timeoutSec * 1000);
 				details.snapshot = outcome.snapshot;
 				details.state = outcome.state;
 				details.timedOut = outcome.timedOut;
 				return result.text(buildOutcomeText(outcome, timeoutSec, "Step over")).done();
 			}
 			case "step_in": {
-				const outcome = await dapSessionManager.stepIn(combinedSignal, timeoutSec * 1000, target);
+				const outcome = await dapSessionManager.stepIn(combinedSignal, timeoutSec * 1000);
 				details.snapshot = outcome.snapshot;
 				details.state = outcome.state;
 				details.timedOut = outcome.timedOut;
 				return result.text(buildOutcomeText(outcome, timeoutSec, "Step in")).done();
 			}
 			case "step_out": {
-				const outcome = await dapSessionManager.stepOut(combinedSignal, timeoutSec * 1000, target);
+				const outcome = await dapSessionManager.stepOut(combinedSignal, timeoutSec * 1000);
 				details.snapshot = outcome.snapshot;
 				details.state = outcome.state;
 				details.timedOut = outcome.timedOut;
 				return result.text(buildOutcomeText(outcome, timeoutSec, "Step out")).done();
 			}
 			case "pause": {
-				const snapshot = await dapSessionManager.pause(combinedSignal, timeoutSec * 1000, target);
+				const snapshot = await dapSessionManager.pause(combinedSignal, timeoutSec * 1000);
 				details.snapshot = snapshot;
-				const lines = formatSessionSnapshot(snapshot);
-				lines.push(
-					snapshot.status === "stopped"
-						? "Program paused."
-						: `Pause requested, but the program is still ${snapshot.status}. No stopped stack is available.`,
-				);
-				return result.text(lines.join("\n")).done();
+				return result.text(formatSessionSnapshot(snapshot).concat("Program paused.").join("\n")).done();
 			}
 			case "evaluate": {
 				if (!params.expression) {
@@ -1018,31 +971,25 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					params.frame_id,
 					combinedSignal,
 					timeoutSec * 1000,
-					target,
 				);
 				details.snapshot = response.snapshot;
 				details.evaluation = response.evaluation;
 				return result.text(formatEvaluation(response.evaluation)).done();
 			}
 			case "stack_trace": {
-				const response = await dapSessionManager.stackTrace(
-					params.levels,
-					combinedSignal,
-					timeoutSec * 1000,
-					target,
-				);
+				const response = await dapSessionManager.stackTrace(params.levels, combinedSignal, timeoutSec * 1000);
 				details.snapshot = response.snapshot;
 				details.stackFrames = response.stackFrames;
 				return result.text(formatStackFrames(response.stackFrames)).done();
 			}
 			case "threads": {
-				const response = await dapSessionManager.threads(combinedSignal, timeoutSec * 1000, target);
+				const response = await dapSessionManager.threads(combinedSignal, timeoutSec * 1000);
 				details.snapshot = response.snapshot;
 				details.threads = response.threads;
 				return result.text(formatThreads(response.threads)).done();
 			}
 			case "scopes": {
-				const response = await dapSessionManager.scopes(params.frame_id, combinedSignal, timeoutSec * 1000, target);
+				const response = await dapSessionManager.scopes(params.frame_id, combinedSignal, timeoutSec * 1000);
 				details.snapshot = response.snapshot;
 				details.scopes = response.scopes;
 				return result.text(formatScopes(response.scopes)).done();
@@ -1052,37 +999,31 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 				if (variableReference === undefined) {
 					throw new ToolError("variables requires variable_ref or scope_id");
 				}
-				const response = await dapSessionManager.variables(
-					variableReference,
-					combinedSignal,
-					timeoutSec * 1000,
-					target,
-				);
+				const response = await dapSessionManager.variables(variableReference, combinedSignal, timeoutSec * 1000);
 				details.snapshot = response.snapshot;
 				details.variables = response.variables;
 				return result.text(formatVariables(response.variables)).done();
 			}
 			case "disassemble": {
-				requireCapability(target, "supportsDisassembleRequest", "disassembly");
+				requireCapability("supportsDisassembleRequest", "disassembly");
 				if (params.instruction_count === undefined) {
 					throw new ToolError("instruction_count is required for disassemble");
 				}
 				const response = await dapSessionManager.disassemble(
-					resolveDisassemblyReference(params.memory_reference, target),
+					resolveDisassemblyReference(params.memory_reference),
 					params.instruction_count,
 					params.offset,
 					params.instruction_offset,
 					params.resolve_symbols,
 					combinedSignal,
 					timeoutSec * 1000,
-					target,
 				);
 				details.snapshot = response.snapshot;
 				details.disassembly = response.instructions;
 				return result.text(formatDisassembly(response.instructions)).done();
 			}
 			case "read_memory": {
-				requireCapability(target, "supportsReadMemoryRequest", "memory reads");
+				requireCapability("supportsReadMemoryRequest", "memory reads");
 				if (!params.memory_reference) {
 					throw new ToolError("memory_reference is required for read_memory");
 				}
@@ -1095,7 +1036,6 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					params.offset,
 					combinedSignal,
 					timeoutSec * 1000,
-					target,
 				);
 				details.snapshot = response.snapshot;
 				details.memoryAddress = response.address;
@@ -1104,7 +1044,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 				return result.text(formatMemoryRead(response.address, response.data, response.unreadableBytes)).done();
 			}
 			case "write_memory": {
-				requireCapability(target, "supportsWriteMemoryRequest", "memory writes");
+				requireCapability("supportsWriteMemoryRequest", "memory writes");
 				if (!params.memory_reference) {
 					throw new ToolError("memory_reference is required for write_memory");
 				}
@@ -1118,7 +1058,6 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					params.allow_partial,
 					combinedSignal,
 					timeoutSec * 1000,
-					target,
 				);
 				details.snapshot = response.snapshot;
 				details.bytesWritten = response.bytesWritten;
@@ -1133,21 +1072,20 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					.done();
 			}
 			case "modules": {
-				requireCapability(target, "supportsModulesRequest", "module introspection");
+				requireCapability("supportsModulesRequest", "module introspection");
 				const response = await dapSessionManager.modules(
 					params.start_module,
 					params.module_count,
 					combinedSignal,
 					timeoutSec * 1000,
-					target,
 				);
 				details.snapshot = response.snapshot;
 				details.modules = response.modules;
 				return result.text(formatModules(response.modules)).done();
 			}
 			case "loaded_sources": {
-				requireCapability(target, "supportsLoadedSourcesRequest", "loaded sources");
-				const response = await dapSessionManager.loadedSources(combinedSignal, timeoutSec * 1000, target);
+				requireCapability("supportsLoadedSourcesRequest", "loaded sources");
+				const response = await dapSessionManager.loadedSources(combinedSignal, timeoutSec * 1000);
 				details.snapshot = response.snapshot;
 				details.sources = response.sources;
 				return result.text(formatLoadedSources(response.sources)).done();
@@ -1161,20 +1099,19 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					params.arguments,
 					combinedSignal,
 					timeoutSec * 1000,
-					target,
 				);
 				details.snapshot = response.snapshot;
 				details.customBody = response.body;
 				return result.text(formatCustomResponse(params.command, response.body)).done();
 			}
 			case "output": {
-				const response = dapSessionManager.getOutput(undefined, target);
+				const response = dapSessionManager.getOutput();
 				details.snapshot = response.snapshot;
 				details.output = response.output;
 				return result.text(response.output.length > 0 ? response.output : "(no output captured)").done();
 			}
 			case "terminate": {
-				const snapshot = await dapSessionManager.terminate(combinedSignal, timeoutSec * 1000, target);
+				const snapshot = await dapSessionManager.terminate(combinedSignal, timeoutSec * 1000);
 				if (!snapshot) {
 					return result.text("No debug session to terminate.").done();
 				}
