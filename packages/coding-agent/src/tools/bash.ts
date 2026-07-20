@@ -696,28 +696,40 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		job: ManagedBashJobHandle,
 		thresholdMs: number,
 		signal?: AbortSignal,
-	): Promise<ManagedBashJobCompletion | { kind: "running" } | { kind: "aborted" }> {
+		steeringSignal?: AbortSignal,
+	): Promise<ManagedBashJobCompletion | { kind: "running" } | { kind: "steer" } | { kind: "aborted" }> {
 		if (signal?.aborted) {
 			return { kind: "aborted" };
 		}
+		if (steeringSignal?.aborted) {
+			return { kind: "steer" };
+		}
 
-		const waiters: Array<Promise<ManagedBashJobCompletion | { kind: "running" } | { kind: "aborted" }>> = [
-			job.completion,
-			Bun.sleep(thresholdMs).then(() => ({ kind: "running" as const })),
-		];
+		const waiters: Array<
+			Promise<ManagedBashJobCompletion | { kind: "running" } | { kind: "steer" } | { kind: "aborted" }>
+		> = [job.completion, Bun.sleep(thresholdMs).then(() => ({ kind: "running" as const }))];
 
-		if (!signal) {
+		if (!signal && !steeringSignal) {
 			return await Promise.race(waiters);
 		}
 
 		const { promise: abortedPromise, resolve: resolveAborted } = Promise.withResolvers<{ kind: "aborted" }>();
 		const onAbort = () => resolveAborted({ kind: "aborted" });
-		signal.addEventListener("abort", onAbort, { once: true });
-		waiters.push(abortedPromise);
+		const { promise: steerPromise, resolve: resolveSteer } = Promise.withResolvers<{ kind: "steer" }>();
+		const onSteer = () => resolveSteer({ kind: "steer" });
+		if (signal) {
+			signal.addEventListener("abort", onAbort, { once: true });
+			waiters.push(abortedPromise);
+		}
+		if (steeringSignal) {
+			steeringSignal.addEventListener("abort", onSteer, { once: true });
+			waiters.push(steerPromise);
+		}
 		try {
 			return await Promise.race(waiters);
 		} finally {
-			signal.removeEventListener("abort", onAbort);
+			signal?.removeEventListener("abort", onAbort);
+			steeringSignal?.removeEventListener("abort", onSteer);
 		}
 	}
 
@@ -903,7 +915,12 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			// foreground-wait cannot also be injected by the delivery loop. Lifted
 			// via resumeDeliveries() if we end up backgrounding after all.
 			autoBgManager.acknowledgeDeliveries([job.jobId]);
-			const waitResult = await this.#waitForManagedBashJob(job, autoBackgroundWaitMs, signal);
+			const waitResult = await this.#waitForManagedBashJob(
+				job,
+				autoBackgroundWaitMs,
+				signal,
+				ctx?.toolCall?.steeringSignal,
+			);
 			if (waitResult.kind === "completed") {
 				return waitResult.result;
 			}
@@ -916,9 +933,15 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			}
 			job.stopUpdates();
 			autoBgManager.resumeDeliveries([job.jobId]);
+			// "steer": a queued user/peer message arrived mid-wait — background
+			// the command (it keeps running) so the message injects promptly.
+			const notices =
+				waitResult.kind === "steer"
+					? [...pendingNotices, "Backgrounded early to handle an incoming message; the command keeps running."]
+					: pendingNotices;
 			return this.#buildBackgroundStartResult(job.jobId, job.getLatestText(), timeoutSec, {
 				requestedTimeoutSec,
-				notices: pendingNotices,
+				notices,
 			});
 		}
 

@@ -458,6 +458,15 @@ export interface ToolCallContext {
 	index: number;
 	total: number;
 	toolCalls: Array<{ id: string; name: string }>;
+	/**
+	 * Cooperative steering signal: aborted when a queued user/steering message
+	 * (or an interrupting peer IRC) is detected while this tool batch runs.
+	 * Unlike the hard abort signal it NEVER kills the tool — long-running
+	 * tools MAY observe it (via `ctx.toolCall.steeringSignal`) to finish early
+	 * or background themselves so the message injects promptly; ignoring it is
+	 * always safe (the message injects at the next batch boundary).
+	 */
+	steeringSignal?: AbortSignal;
 }
 
 /** A single tool-call content block emitted by an assistant message. */

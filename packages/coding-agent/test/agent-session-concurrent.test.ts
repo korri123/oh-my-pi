@@ -917,19 +917,6 @@ describe("AgentSession concurrent prompt guard", () => {
 		const asyncJobManager = new AsyncJobManager({
 			maxRunningJobs: 2,
 			retentionMs: 1_000,
-			onJobComplete: async () => {
-				deliveryStarted = true;
-				await deliveryGate.promise;
-				await session.sendCustomMessage(
-					{
-						customType: "async-result",
-						content: "Background result",
-						display: true,
-						attribution: "agent",
-					},
-					{ deliverAs: "followUp", triggerTurn: true },
-				);
-			},
 		});
 		AsyncJobManager.setInstance(asyncJobManager);
 
@@ -944,6 +931,21 @@ describe("AgentSession concurrent prompt guard", () => {
 		session.setClientBridge({
 			capabilities: {},
 			deferAgentInitiatedTurns: true,
+		});
+		// Override the session's self-registered sink: the test gates delivery
+		// and reproduces the ACP follow-up injection explicitly.
+		asyncJobManager.registerDeliverySink(ownerId, async () => {
+			deliveryStarted = true;
+			await deliveryGate.promise;
+			await session.sendCustomMessage(
+				{
+					customType: "async-result",
+					content: "Background result",
+					display: true,
+					attribution: "agent",
+				},
+				{ deliverAs: "followUp", triggerTurn: true },
+			);
 		});
 
 		await session.prompt("First message");
@@ -994,13 +996,6 @@ describe("AgentSession concurrent prompt guard", () => {
 		const asyncJobManager = new AsyncJobManager({
 			maxRunningJobs: 3,
 			retentionMs: 1_000,
-			onJobComplete: async jobId => {
-				started.add(jobId);
-				if (jobId === "job-a") {
-					await deliveryGate.promise;
-				}
-				delivered.push(jobId);
-			},
 		});
 		AsyncJobManager.setInstance(asyncJobManager);
 
@@ -1029,6 +1024,19 @@ describe("AgentSession concurrent prompt guard", () => {
 			modelRegistry,
 			agentId: "acp-session-a",
 			ownedAsyncJobManager: asyncJobManager,
+		});
+		// Override both sessions' self-registered sinks so the test controls
+		// delivery timing and records routing order.
+		asyncJobManager.registerDeliverySink("acp-session-a", async jobId => {
+			started.add(jobId);
+			if (jobId === "job-a") {
+				await deliveryGate.promise;
+			}
+			delivered.push(jobId);
+		});
+		asyncJobManager.registerDeliverySink("acp-session-b", async jobId => {
+			started.add(jobId);
+			delivered.push(jobId);
 		});
 
 		try {

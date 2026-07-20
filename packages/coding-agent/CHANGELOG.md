@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added owner-routed async job delivery: every session (including subagents) registers its own delivery sink, so background bash/task results are injected into the owning agent's run instead of the first top-level session; deliveries whose owner is gone are dead-lettered with the result retained on the job row.
+- Added `AsyncJobManager.registerDeliverySink` and `AsyncJobManager.waitForOwnerJobs` (with an `excludeSuppressed` filter for quiescence checks).
+- Added background-on-steer for auto-backgrounded bash: an incoming user/peer message backgrounds the running command (instead of waiting it out or killing it) so the message is handled promptly.
+
+### Changed
+
+- Subagents now inherit `async.enabled` and `bash.autoBackground.enabled` from the parent instead of having both force-disabled. Subagent runs complete only after their own background jobs settle (results are folded into the run as async-result follow-ups, with a one-time notice offering `hub` wait/cancel), and teardown cancels and awaits surviving jobs before isolation worktree capture and cleanup.
+
 ### Fixed
 
 - Fixed MCP tools repeatedly unmounting and remounting mid-session when server names have overlapping sanitized prefixes (e.g. `atlassian` alongside an imported `atlassian:atlassian`), and stale tools remaining registered after disconnecting a server with special characters in its name.

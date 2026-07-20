@@ -113,7 +113,7 @@ describe("AgentSession todo reminder async-job deferral", () => {
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
 		sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
-		manager = new AsyncJobManager({ onJobComplete: async () => {} });
+		manager = new AsyncJobManager({});
 		gates = [];
 		extensionRunner = {
 			emit: vi.fn().mockResolvedValue(undefined),
@@ -148,6 +148,9 @@ describe("AgentSession todo reminder async-job deferral", () => {
 			asyncJobManager: manager,
 			extensionRunner,
 		});
+		// Override the session's self-registered sink with a no-op: these tests
+		// exercise the async-wake deferral gates, not result injection.
+		manager.registerDeliverySink("Main", () => {});
 
 		reminderAttempts = [];
 		({ promise: firstReminderPromise, resolve: resolveFirstReminder } = Promise.withResolvers<void>());

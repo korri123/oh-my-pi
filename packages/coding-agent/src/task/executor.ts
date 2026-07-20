@@ -9,6 +9,7 @@ import type { AgentEvent, AgentIdentity, AgentTelemetryConfig } from "@oh-my-pi/
 import { recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
 import { logger, popLoopPhase, prompt, pushLoopPhase, untilAborted } from "@oh-my-pi/pi-utils";
+import { AsyncJobManager } from "../async";
 import type { Rule } from "../capability/rule";
 import { ModelRegistry } from "../config/model-registry";
 import {
@@ -33,6 +34,7 @@ import type { LocalProtocolOptions } from "../internal-urls";
 import { callTool } from "../mcp/client";
 import type { MCPManager } from "../mcp/manager";
 import type { MnemopiSessionState } from "../mnemopi/state";
+import subagentAsyncPendingTemplate from "../prompts/system/subagent-async-pending.md" with { type: "text" };
 import subagentSystemPromptTemplate from "../prompts/system/subagent-system-prompt.md" with { type: "text" };
 import submitReminderTemplate from "../prompts/system/subagent-yield-reminder.md" with { type: "text" };
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
@@ -863,8 +865,11 @@ export function createSubagentSettings(
 	snapshot["tier.google"] = subagentTiers.google ?? "none";
 	return Settings.isolated({
 		...snapshot,
-		"async.enabled": false,
-		"bash.autoBackground.enabled": false,
+		// Async jobs and bash auto-backgrounding are inherited from the parent:
+		// background jobs are owner-routed to the subagent's own session, and
+		// the run driver's quiescence barrier + teardown reap guarantee no
+		// owner job outlives the run, so worktree capture/cleanup stays
+		// race-free (previously both were force-disabled here).
 
 		// Subagents run headless — there is no UI to confirm prompts against, so
 		// the parent task approval is the authorization boundary. Use yolo mode
@@ -1763,6 +1768,54 @@ async function driveSessionToYield(
 					});
 				}
 			}
+		}
+
+		// Quiescence barrier (structured concurrency): a final yield with owner
+		// background jobs still running or undelivered is a scheduling pause,
+		// not run completion. Wait for the jobs to settle, let their
+		// async-result follow-up turns run to idle, and only then classify the
+		// terminal state — the isolation runner captures and destroys the
+		// worktree right after this run resolves, so no owner job that could
+		// still re-wake the session may outlive it. Suppressed (acknowledged /
+		// hub-watched) jobs never re-wake the run and are reaped at teardown.
+		//
+		// Before blocking on running jobs, tell the model ONCE what it is
+		// waiting on so it can `hub` wait/cancel instead of sitting silent
+		// until the jobs (or the runtime limit) expire. Guarded to a single
+		// notice per run — a model that yields again with jobs still running
+		// is then waited out passively. Runs that never yielded (ladder
+		// exhausted / terminal model error) skip the barrier entirely — more
+		// injected turns just multiply the failure noise; the teardown reap
+		// still cancels and awaits their jobs before worktree capture.
+		let asyncPendingNoticeSent = false;
+		while (monitor.yieldCalled() && !abortSignal.aborted && session.hasPendingAsyncWork()) {
+			if (!asyncPendingNoticeSent) {
+				asyncPendingNoticeSent = true;
+				const running = session.getAsyncJobSnapshot()?.running ?? [];
+				if (running.length > 0) {
+					const jobs = running.map(job => `${job.id}${job.label ? ` (${job.label})` : ""}`).join(", ");
+					const notice = prompt.render(subagentAsyncPendingTemplate, {
+						count: running.length,
+						multiple: running.length > 1,
+						jobs,
+					});
+					try {
+						await awaitAbortable(session.prompt(notice, { attribution: "agent", synthetic: true }));
+						await awaitAbortable(session.waitForIdle());
+					} catch (err) {
+						if (abortSignal.aborted || err instanceof ToolAbortError) throw err;
+						// A failed notice turn must not kill the run — fall through
+						// to the passive settle below.
+						logger.warn("Subagent async-pending notice failed", {
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
+					// Re-evaluate: the notice turn may have cancelled, watched, or
+					// absorbed the jobs.
+					continue;
+				}
+			}
+			await awaitAbortable(session.settleAsyncWork());
 		}
 
 		if (monitor.yieldCalled()) {
@@ -2825,6 +2878,20 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					agentIdleTtlMs,
 					reviveSession,
 				});
+			}
+			// Structured-concurrency reap: cancel and await ALL surviving owner
+			// jobs (abort paths; suppressed/watched jobs the model left behind)
+			// so isolation capture/cleanup never races a live process writing
+			// into the worktree. This never proceeds while an owner process is
+			// live: cancellation SIGKILL-escalates, so settlement is expected
+			// within one interval — an unkillable process blocks here visibly
+			// (with periodic warnings) instead of silently racing teardown.
+			const jobManager = AsyncJobManager.instance();
+			if (jobManager) {
+				jobManager.cancelAll({ ownerId: id });
+				while (!(await jobManager.waitForOwnerJobs(id, { timeoutMs: 10_000 }))) {
+					logger.warn("Subagent async jobs still settling; delaying teardown until process exit", { id });
+				}
 			}
 		}
 

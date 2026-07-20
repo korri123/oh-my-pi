@@ -32,7 +32,7 @@ import {
 	formatActiveRepoWatchdogPrompt,
 	formatAdvisorContextPrompt,
 } from "./advisor";
-import { type AsyncJob, AsyncJobManager } from "./async";
+import { AsyncJobManager } from "./async";
 import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/controller";
 import { createAutoresearchExtension } from "./autoresearch";
 import { loadCapability } from "./capability";
@@ -106,7 +106,6 @@ import {
 import { MCP_CONNECTION_STATUS_EVENT_CHANNEL, type McpConnectionStatusEvent } from "./mcp/startup-events";
 import { createSessionMemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
 import type { MnemopiSessionState } from "./mnemopi/state";
-import asyncResultTemplate from "./prompts/tools/async-result.md" with { type: "text" };
 import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
@@ -201,59 +200,10 @@ import { EventBus } from "./utils/event-bus";
 import { buildNamedToolChoice } from "./utils/tool-choice";
 import { buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
 
-type AsyncResultEntry = {
-	jobId: string;
-	result: string;
-	job: AsyncJob | undefined;
-	durationMs: number | undefined;
-};
-
-type AsyncResultJobDetails = {
-	jobId: string;
-	type?: "bash" | "task";
-	label?: string;
-	durationMs?: number;
-};
-
-type AsyncResultDetails = {
-	jobs: AsyncResultJobDetails[];
-};
-
 type McpNotificationEntry = {
 	serverName: string;
 	uri: string;
 };
-
-function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): CustomMessage<AsyncResultDetails> | null {
-	if (entries.length === 0) return null;
-	const jobs = entries.map(entry => ({
-		jobId: entry.jobId,
-		result: entry.result,
-		type: entry.job?.type,
-		label: entry.job?.label,
-		durationMs: entry.durationMs,
-	}));
-	const details: AsyncResultDetails = {
-		jobs: jobs.map(job => ({
-			jobId: job.jobId,
-			type: job.type,
-			label: job.label,
-			durationMs: job.durationMs,
-		})),
-	};
-	return {
-		role: "custom",
-		customType: "async-result",
-		content: prompt.render(asyncResultTemplate, {
-			multiple: jobs.length > 1,
-			jobs,
-		}),
-		display: true,
-		attribution: "agent",
-		details,
-		timestamp: Date.now(),
-	};
-}
 
 type LateDiagnosticsDetails = {
 	files: Array<{ path: string; summary: string; errored: boolean; messages: string[] }>;
@@ -1562,28 +1512,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const restrictToolNames = options.restrictToolNames === true;
 	const enableLsp = !restrictToolNames && (options.enableLsp ?? true);
 	const asyncMaxJobs = Math.min(100, Math.max(1, settings.get("async.maxJobs") ?? 100));
-	const ASYNC_INLINE_RESULT_MAX_CHARS = 12_000;
-	const ASYNC_PREVIEW_MAX_CHARS = 4_000;
-	const formatAsyncResultForFollowUp = async (result: string): Promise<string> => {
-		if (result.length <= ASYNC_INLINE_RESULT_MAX_CHARS) {
-			return result;
-		}
-
-		const preview = `${result.slice(0, ASYNC_PREVIEW_MAX_CHARS)}\n\n[Output truncated. Showing first ${ASYNC_PREVIEW_MAX_CHARS.toLocaleString()} characters.]`;
-		try {
-			const { path: artifactPath, id: artifactId } = await sessionManager.allocateArtifactPath("async");
-			if (artifactPath && artifactId) {
-				await Bun.write(artifactPath, result);
-				return `${preview}\nFull output: artifact://${artifactId}`;
-			}
-		} catch (error) {
-			logger.warn("Failed to persist async follow-up artifact", {
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
-
-		return preview;
-	};
 	// Only the first top-level session in a process owns an AsyncJobManager.
 	// Subagents inherit the parent's manager via `AsyncJobManager.instance()`
 	// (set below), and any additional top-level session spun up in-process
@@ -1592,24 +1520,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// owning session's manager and break the `task`/`bash` async paths
 	// (issue #1923). The `instance()` guard means later sessions also skip
 	// constructing an orphaned manager that nothing would ever route to.
+	// Delivery is owner-routed: every AgentSession registers its own sink
+	// (see session/async-job-delivery.ts), so the manager takes no default
+	// onJobComplete here.
 	const asyncJobManager =
 		!options.parentTaskPrefix && !AsyncJobManager.instance()
-			? new AsyncJobManager({
-					maxRunningJobs: asyncMaxJobs,
-					onJobComplete: async (jobId, result, job) => {
-						if (!session || asyncJobManager!.isDeliverySuppressed(jobId)) return;
-						const formattedResult = await formatAsyncResultForFollowUp(result);
-						if (asyncJobManager!.isDeliverySuppressed(jobId)) return;
-
-						const durationMs = job ? Math.max(0, Date.now() - job.startTime) : undefined;
-						session.yieldQueue.enqueue<AsyncResultEntry>("async-result", {
-							jobId,
-							result: formattedResult,
-							job,
-							durationMs,
-						});
-					},
-				})
+			? new AsyncJobManager({ maxRunningJobs: asyncMaxJobs })
 			: undefined;
 
 	const scopedAsyncJobManager = asyncJobManager ?? (options.parentTaskPrefix ? AsyncJobManager.instance() : undefined);
@@ -2988,12 +2904,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			titleSystemPrompt: options.titleSystemPrompt,
 		});
 		hasSession = true;
-		if (asyncJobManager) {
-			session.yieldQueue.register<AsyncResultEntry>("async-result", {
-				isStale: entry => asyncJobManager.isDeliverySuppressed(entry.jobId),
-				build: buildAsyncResultBatchMessage,
-			});
-		}
 		session.yieldQueue.register<McpNotificationEntry>("mcp-notification", {
 			build: buildMcpNotificationBatchMessage,
 		});
