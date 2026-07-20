@@ -109,26 +109,31 @@ export const LABEL_MAX = 80;
 // Keep this explicit: ArkType serializes `unknown` as a boolean subschema, which llama.cpp grammars reject.
 const outputSchemaInputSchema = type("object | boolean | string | null");
 
-export const taskItemSchema = type({
+const TASK_ITEM_FIELDS = {
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
-	"+": "delete",
-});
-const taskItemSchemaIsolated = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	"outputSchema?": outputSchemaInputSchema,
-	"schemaMode?": '"permissive" | "strict"',
+} as const;
+const TASK_ISOLATION_FIELDS = {
 	"isolated?": "boolean",
-	"+": "delete",
-});
+	"apply?": "boolean",
+} as const;
+
+export const taskItemSchema = type({ ...TASK_ITEM_FIELDS, "+": "delete" });
+const taskItemSchemaIsolated = type({ ...TASK_ITEM_FIELDS, ...TASK_ISOLATION_FIELDS, "+": "delete" });
+
+/** Model-facing controls for one task spawn's isolated worktree. */
+export interface TaskIsolationControls {
+	/** Run this spawn in an isolated worktree. */
+	isolated?: boolean;
+	/** Apply isolated changes to the parent checkout; defaults to true. */
+	apply?: boolean;
+}
 
 /** Single task item. Fields are optional defensively: args stream in token by token. */
-export interface TaskItem {
+export interface TaskItem extends TaskIsolationControls {
 	/** Stable agent name; becomes the registry/IRC id. Default = generated AdjectiveNoun. */
 	name?: string;
 	/** Agent type to run this item (e.g. "scout"). Defaults to the spawn policy's default agent. */
@@ -139,27 +144,10 @@ export interface TaskItem {
 	outputSchema?: unknown;
 	/** Validation behavior for a caller-provided or inherited output schema. */
 	schemaMode?: "permissive" | "strict";
-	/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */
-	isolated?: boolean;
 }
 
-export const taskSchema = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	"outputSchema?": outputSchemaInputSchema,
-	"schemaMode?": '"permissive" | "strict"',
-	"isolated?": "boolean",
-	"+": "delete",
-});
-const taskSchemaNoIsolation = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	"outputSchema?": outputSchemaInputSchema,
-	"schemaMode?": '"permissive" | "strict"',
-	"+": "delete",
-});
+export const taskSchema = taskItemSchemaIsolated;
+const taskSchemaNoIsolation = taskItemSchema;
 const taskSchemaBatch = type({
 	context: "string",
 	tasks: taskItemSchemaIsolated.array(),
@@ -188,60 +176,25 @@ function taskAgentSchemaRule(defaultAgent: string): string {
 	return "string";
 }
 
+function createTaskItemSchema(agent: string, isolationEnabled: boolean): BaseType {
+	return type.raw({
+		...TASK_ITEM_FIELDS,
+		agent,
+		...(isolationEnabled ? TASK_ISOLATION_FIELDS : {}),
+		"+": "delete",
+	});
+}
+
 function createTaskSchema(options: {
 	isolationEnabled: boolean;
 	batchEnabled: boolean;
 	defaultAgent: string;
 }): BaseType {
-	const agent = taskAgentSchemaRule(options.defaultAgent);
-	if (options.batchEnabled) {
-		if (options.isolationEnabled) {
-			const item = type.raw({
-				"name?": "string",
-				agent,
-				task: "string",
-				"outputSchema?": outputSchemaInputSchema,
-				"schemaMode?": '"permissive" | "strict"',
-				"isolated?": "boolean",
-				"+": "delete",
-			});
-			return type.raw({
-				context: "string",
-				tasks: item.array(),
-				"+": "delete",
-			});
-		}
-		const item = type.raw({
-			"name?": "string",
-			agent,
-			task: "string",
-			"outputSchema?": outputSchemaInputSchema,
-			"schemaMode?": '"permissive" | "strict"',
-			"+": "delete",
-		});
-		return type.raw({
-			context: "string",
-			tasks: item.array(),
-			"+": "delete",
-		});
-	}
-	if (options.isolationEnabled) {
-		return type.raw({
-			"name?": "string",
-			agent,
-			task: "string",
-			"outputSchema?": outputSchemaInputSchema,
-			"schemaMode?": '"permissive" | "strict"',
-			"isolated?": "boolean",
-			"+": "delete",
-		});
-	}
+	const item = createTaskItemSchema(taskAgentSchemaRule(options.defaultAgent), options.isolationEnabled);
+	if (!options.batchEnabled) return item;
 	return type.raw({
-		"name?": "string",
-		agent,
-		task: "string",
-		"outputSchema?": outputSchemaInputSchema,
-		"schemaMode?": '"permissive" | "strict"',
+		context: "string",
+		tasks: item.array(),
 		"+": "delete",
 	});
 }
@@ -276,7 +229,7 @@ export function getTaskSchema(options: {
  * otherwise); runtime stays permissive so internal callers and stale
  * transcripts using the flat form keep working under either setting.
  */
-export interface TaskParams {
+export interface TaskParams extends TaskIsolationControls {
 	/** Stable agent name (flat form). */
 	name?: string;
 	/** Agent type to spawn (flat form); omitted values resolve from the session spawn policy. */
@@ -291,8 +244,6 @@ export interface TaskParams {
 	tasks?: TaskItem[];
 	/** Batch form: shared background prepended to every assignment; required by the batch schema. */
 	context?: string;
-	/** Run in an isolated worktree (flat form; per-item in batch form). */
-	isolated?: boolean;
 }
 
 /**

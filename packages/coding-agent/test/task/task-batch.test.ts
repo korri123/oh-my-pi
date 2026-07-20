@@ -125,19 +125,30 @@ describe("task.batch schema gating", () => {
 		expect(items?.properties?.schemaMode).toBeDefined();
 	});
 
-	it("places isolated per item in the batch shape when isolation is enabled", async () => {
+	it("places isolation controls per item in the batch shape and top-level in the flat shape", async () => {
 		mockDiscovery();
 
-		const tool = await TaskTool.create(
+		const batch = await TaskTool.create(
 			createSession({ settings: { "task.batch": true, "task.isolation.mode": "auto" } }),
 		);
-		const properties = getSchemaProperties(tool);
-		expect(properties.isolated).toBeUndefined();
-		const items = (properties.tasks as { items?: { properties?: Record<string, unknown> } }).items;
+		const batchProperties = getSchemaProperties(batch);
+		expect(batchProperties.isolated).toBeUndefined();
+		expect(batchProperties.apply).toBeUndefined();
+		const items = (batchProperties.tasks as { items?: { properties?: Record<string, unknown> } }).items;
 		expect(items?.properties?.isolated).toBeDefined();
+		expect(items?.properties?.apply).toBeDefined();
+		expect(batch.description).toContain("`apply`");
+		expect(batch.description).toContain("without modifying the parent");
+
+		const flat = await TaskTool.create(
+			createSession({ settings: { "task.batch": false, "task.isolation.mode": "auto" } }),
+		);
+		const flatProperties = getSchemaProperties(flat);
+		expect(flatProperties.isolated).toBeDefined();
+		expect(flatProperties.apply).toBeDefined();
 	});
 
-	it("hides isolation from the dynamic batch schema in plan mode", async () => {
+	it("hides isolation controls from the dynamic batch schema in plan mode", async () => {
 		mockDiscovery();
 		const tool = await TaskTool.create(
 			createSession({
@@ -148,7 +159,9 @@ describe("task.batch schema gating", () => {
 		const properties = getSchemaProperties(tool);
 		const items = (properties.tasks as { items?: { properties?: Record<string, unknown> } }).items;
 		expect(items?.properties?.isolated).toBeUndefined();
+		expect(items?.properties?.apply).toBeUndefined();
 		expect(tool.description).not.toContain("`isolated`");
+		expect(tool.description).not.toContain("`apply`");
 	});
 
 	it("exposes outputSchema but never the stale schema field", async () => {

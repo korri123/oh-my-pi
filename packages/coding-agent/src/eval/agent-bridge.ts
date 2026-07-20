@@ -7,6 +7,7 @@ import {
 	runStructuredSubagent,
 	StructuredSubagentError,
 	type StructuredSubagentSchemaMode,
+	toStructuredSubagentIsolationControls,
 } from "../task/structured-subagent";
 import type { AgentProgress, SingleResult } from "../task/types";
 import type { NestedRepoPatch } from "../task/worktree";
@@ -14,7 +15,7 @@ import type { ToolSession } from "../tools";
 import { ToolError } from "../tools/tool-errors";
 import { withBridgeTimeoutPause } from "./bridge-timeout";
 import type { JsStatusEvent } from "./js/shared/types";
-import { buildEvalSubagentRunOptions, renderSubagentPrompt, resolveEvalSubagentContext } from "./subagent-runner";
+
 // Import review tools for side effects (registers subagent tool handlers).
 import "../tools/review";
 
@@ -92,7 +93,6 @@ function parseAgentArgs(args: unknown): EvalAgentArgs {
 	return result;
 }
 
-
 function trimToUndefined(value: string | undefined): string | undefined {
 	const trimmed = value?.trim();
 	return trimmed ? trimmed : undefined;
@@ -142,14 +142,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 			`agent() blocked: turn token budget exhausted (${turnBudget.spent}/${turnBudget.total} output tokens). Raise or drop the +Nk! ceiling to continue.`,
 		);
 	}
-	const isolation =
-		Object.hasOwn(parsed, "isolated") || Object.hasOwn(parsed, "apply") || Object.hasOwn(parsed, "merge")
-			? {
-					...(parsed.isolated !== undefined ? { requested: parsed.isolated } : {}),
-					...(parsed.merge === false ? { merge: "patch" as const } : {}),
-					...(parsed.apply !== undefined ? { apply: parsed.apply } : {}),
-				}
-			: undefined;
+	const isolation = toStructuredSubagentIsolationControls(parsed);
 
 	try {
 		const execution = await withBridgeTimeoutPause(

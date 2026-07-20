@@ -33,6 +33,7 @@ import {
 	canSpawnAtDepth,
 	getTaskSchema,
 	type SingleResult,
+	type TaskIsolationControls,
 	type TaskItem,
 	type TaskParams,
 	type TaskToolDetails,
@@ -48,7 +49,12 @@ import { AgentOutputManager } from "./output-manager";
 import { mapWithConcurrencyLimitAllSettled, Semaphore } from "./parallel";
 import { renderResult, renderCall as renderTaskCall } from "./render";
 import { repairTaskParams } from "./repair-args";
-import { resolveEffectiveSubagentPolicy, runStructuredSubagent, StructuredSubagentError } from "./structured-subagent";
+import {
+	resolveEffectiveSubagentPolicy,
+	runStructuredSubagent,
+	StructuredSubagentError,
+	toStructuredSubagentIsolationControls,
+} from "./structured-subagent";
 
 function renderSubagentUserPrompt(assignment: string): string {
 	return prompt.render(subagentUserPromptTemplate, {
@@ -269,10 +275,22 @@ function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string 
 	return undefined;
 }
 
+/** Copy the first explicitly supplied value for each task isolation control. */
+function copyTaskIsolationControls(
+	target: TaskIsolationControls,
+	primary: TaskIsolationControls,
+	fallback?: TaskIsolationControls,
+): void {
+	if (Object.hasOwn(primary, "isolated")) target.isolated = primary.isolated;
+	else if (fallback && Object.hasOwn(fallback, "isolated")) target.isolated = fallback.isolated;
+	if (Object.hasOwn(primary, "apply")) target.apply = primary.apply;
+	else if (fallback && Object.hasOwn(fallback, "apply")) target.apply = fallback.apply;
+}
+
 /**
  * Normalize a validated call into its spawn list: the `tasks[]` batch when
- * provided, otherwise the single top-level spawn. The flat form's `isolated`
- * flag is only materialized when the caller sent one — `#runSpawn`
+ * provided, otherwise the single top-level spawn. The flat form's isolation controls
+ * are is only materialized when the caller sent one — `#runSpawn`
  * distinguishes an absent key from an explicit value.
  */
 function resolveSpawnItems(params: TaskParams): TaskItem[] {
@@ -282,7 +300,7 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task };
 	if ("outputSchema" in params) item.outputSchema = params.outputSchema;
 	if ("schemaMode" in params) item.schemaMode = params.schemaMode;
-	if ("isolated" in params) item.isolated = params.isolated;
+	copyTaskIsolationControls(item, params);
 	return [item];
 }
 
@@ -292,8 +310,8 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
  * the item's own value, else `defaultAgent` from the session spawn policy.
  * `tasks` never leaks into a spawn; the shared `context` rides along
  * unchanged. Keys are only materialized when present — `#runSpawn`
- * distinguishes an absent `isolated` from an explicit one. The item's
- * `isolated` (batch form) wins over the top-level flag (flat form).
+ * distinguishes absent isolation controls from explicit values. Per-item
+ * controls (batch form) win over top-level controls (flat compatibility form).
  */
 function spawnParamsFor(params: TaskParams, item: TaskItem, defaultAgent: string): TaskParams {
 	const spawn: TaskParams = { agent: item.agent?.trim() || defaultAgent };
@@ -302,11 +320,7 @@ function spawnParamsFor(params: TaskParams, item: TaskItem, defaultAgent: string
 	if (params.context !== undefined) spawn.context = params.context;
 	if ("outputSchema" in item) spawn.outputSchema = item.outputSchema;
 	if ("schemaMode" in item) spawn.schemaMode = item.schemaMode;
-	if (item.isolated !== undefined) {
-		spawn.isolated = item.isolated;
-	} else if ("isolated" in params) {
-		spawn.isolated = params.isolated;
-	}
+	copyTaskIsolationControls(spawn, item, params);
 	return spawn;
 }
 
@@ -595,6 +609,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	 * task wire contract.
 	 */
 	#resolveSpawnPreflight(params: TaskParams) {
+		const isolation = toStructuredSubagentIsolationControls(params);
 		return resolveEffectiveSubagentPolicy({
 			session: this.session,
 			invocationKind: "task",
@@ -603,7 +618,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			agent: params.agent,
 			...(Object.hasOwn(params, "outputSchema") ? { outputSchema: params.outputSchema } : {}),
 			...(Object.hasOwn(params, "schemaMode") ? { schemaMode: params.schemaMode } : {}),
-			...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),
+			...(isolation ? { isolation } : {}),
 			blockedAgent: this.#blockedAgent,
 			enableLsp: (this.session.enableLsp ?? true) && this.session.settings.get("task.enableLsp"),
 			enableIrc: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
@@ -1364,6 +1379,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const startTime = Date.now();
 		const assignment = (params.task ?? "").trim();
 		const context = this.#isBatchEnabled() ? params.context?.trim() || undefined : undefined;
+		const isolation = toStructuredSubagentIsolationControls(params);
 		let latestProgress: AgentProgress | undefined;
 		try {
 			const execution = await runStructuredSubagent({
@@ -1380,7 +1396,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				detached,
 				invokedAt: launchTiming?.invokedAt,
 				acquiredAt: launchTiming?.acquiredAt,
-				...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),
+				...(isolation ? { isolation } : {}),
 				blockedAgent: this.#blockedAgent,
 				enableLsp: (this.session.enableLsp ?? true) && this.session.settings.get("task.enableLsp"),
 				enableIrc: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),

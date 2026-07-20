@@ -762,7 +762,7 @@ function renderTaskItemLines(tasks: TaskItem[] | undefined, theme: Theme): strin
 		}
 		line += agentTypeBadge(item?.agent, theme);
 		if (item?.isolated === true) {
-			line += theme.fg("dim", " [isolated]");
+			line += theme.fg("dim", item.apply === false ? " [isolated, capture-only]" : " [isolated]");
 		}
 		lines.push(line);
 	}
@@ -829,6 +829,7 @@ function createMarkdownSectionRenderer(text: string, theme: Theme): AssignmentSe
  */
 export function renderCall(args: TaskParams, options: TaskRenderOptions, theme: Theme): Component {
 	const showIsolated = "isolated" in args && args.isolated === true;
+	const captureOnly = showIsolated && args.apply === false;
 	// Dispatch glyph from the first frame: spawning is non-blocking, so a
 	// pending/hourglass icon would misread the call as something the turn
 	// waits on.
@@ -866,7 +867,7 @@ export function renderCall(args: TaskParams, options: TaskRenderOptions, theme: 
 
 		return {
 			header,
-			headerMeta: showIsolated ? "isolated" : undefined,
+			headerMeta: captureOnly ? "isolated · capture-only" : showIsolated ? "isolated" : undefined,
 			sections,
 			state: "pending",
 			borderColor: "borderMuted",

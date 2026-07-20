@@ -17,6 +17,7 @@ import {
 	runStructuredSubagent,
 	StructuredSubagentError,
 	type StructuredSubagentRequest,
+	toStructuredSubagentIsolationControls,
 } from "@oh-my-pi/pi-coding-agent/task/structured-subagent";
 import type { AgentDefinition, SingleResult } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -393,6 +394,47 @@ describe("structured subagent primitive", () => {
 			request({ session: session({ isolationMode: "worktree" }), isolation: { requested: true } }),
 		);
 
+		expect(artifactsDirsFromRegistry()).toContain(settled.artifactsDir);
+		expect(await fs.stat(artifactsDir ?? "")).toBeDefined();
+		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
+	});
+
+	it("maps shared isolation controls and keeps apply enabled by default", async () => {
+		mockDiscovery();
+		expect(toStructuredSubagentIsolationControls({ isolated: true, apply: false, merge: false })).toEqual({
+			requested: true,
+			merge: "patch",
+			apply: false,
+		});
+		expect(toStructuredSubagentIsolationControls({})).toBeUndefined();
+
+		const policy = await resolveEffectiveSubagentPolicy(
+			request({ session: session({ isolationMode: "worktree" }), isolation: { requested: true } }),
+		);
+		expect(policy.applyChanges).toBe(true);
+	});
+
+	it("retains successful isolated captures without merging when apply is false", async () => {
+		mockDiscovery();
+		let artifactsDir: string | undefined;
+		vi.spyOn(isolationRunner, "prepareIsolationContext").mockResolvedValue({ repoRoot: "/tmp" } as never);
+		vi.spyOn(isolationRunner, "runIsolatedSubprocess").mockImplementation(async ({ baseOptions }) => {
+			artifactsDir = baseOptions.artifactsDir;
+			return { ...result(), patchPath: "/recovery/Worker.patch" };
+		});
+		const merge = vi.spyOn(isolationRunner, "mergeIsolatedChanges");
+
+		const settled = await runStructuredSubagent(
+			request({
+				session: session({ isolationMode: "worktree" }),
+				isolation: { requested: true, apply: false },
+			}),
+		);
+
+		expect(merge).not.toHaveBeenCalled();
+		expect(settled.changesApplied).toBeNull();
+		expect(settled.mergeSummary).toContain("apply=false");
+		expect(settled.mergeSummary).toContain("Not applied");
 		expect(artifactsDirsFromRegistry()).toContain(settled.artifactsDir);
 		expect(await fs.stat(artifactsDir ?? "")).toBeDefined();
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
