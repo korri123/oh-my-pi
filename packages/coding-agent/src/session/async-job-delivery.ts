@@ -13,6 +13,13 @@ import type { AsyncJob } from "../async";
 import asyncResultTemplate from "../prompts/tools/async-result.md" with { type: "text" };
 import type { CustomMessage } from "./messages";
 
+/**
+ * `customType` of the injected async-result follow-up message. The task
+ * executor's run monitor matches on it to invalidate a previously recorded
+ * yield: a result injected after the yield supersedes that yield's payload.
+ */
+export const ASYNC_RESULT_MESSAGE_TYPE = "async-result";
+
 /** Result payloads longer than this spill to an artifact with an inline preview. */
 export const ASYNC_INLINE_RESULT_MAX_CHARS = 12_000;
 export const ASYNC_PREVIEW_MAX_CHARS = 4_000;
@@ -54,7 +61,7 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 	};
 	return {
 		role: "custom",
-		customType: "async-result",
+		customType: ASYNC_RESULT_MESSAGE_TYPE,
 		content: prompt.render(asyncResultTemplate, {
 			multiple: jobs.length > 1,
 			jobs,

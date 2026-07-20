@@ -333,7 +333,6 @@ describe("AsyncJobManager", () => {
 	});
 
 	test("scoped delivery drain times out while a matching delivery callback is in flight", async () => {
-		let mainJobId = "";
 		let targetJobId = "";
 		let releaseMainDelivery = (): void => {};
 		let notifyMainDeliveryStarted = (): void => {};
@@ -363,7 +362,7 @@ describe("AsyncJobManager", () => {
 			completions.push(jobId);
 		});
 
-		mainJobId = manager.register("task", "main job", async () => "main result", { ownerId: "0-Main" });
+		manager.register("task", "main job", async () => "main result", { ownerId: "0-Main" });
 		targetJobId = manager.register("task", "subagent job", async () => "subagent result", {
 			ownerId: "3-AuthLoader",
 		});
