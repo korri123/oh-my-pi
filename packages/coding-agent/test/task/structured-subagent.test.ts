@@ -414,6 +414,16 @@ describe("structured subagent primitive", () => {
 		expect(policy.applyChanges).toBe(true);
 	});
 
+	it("rejects apply controls unless isolation is explicitly requested", async () => {
+		const discover = vi.spyOn(discoveryModule, "discoverAgents");
+		for (const isolation of [{ apply: false }, { requested: false, apply: false }, { apply: true }]) {
+			await expect(resolveEffectiveSubagentPolicy(request({ isolation }))).rejects.toThrow(
+				"Subagent `apply` control requires `isolated: true`.",
+			);
+		}
+		expect(discover).not.toHaveBeenCalled();
+	});
+
 	it("retains successful isolated captures without merging when apply is false", async () => {
 		mockDiscovery();
 		let artifactsDir: string | undefined;

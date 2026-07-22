@@ -225,6 +225,22 @@ describe("task.batch validation", () => {
 		expect(text).toContain("Missing `context`");
 	});
 
+	it("rejects apply without effective isolation before spawning", async () => {
+		const runSubprocess = vi.spyOn(executorModule, "runSubprocess");
+		const flat = await executeText(
+			{ agent: "task", task: "Work.", apply: false },
+			{ "task.batch": false, "task.isolation.mode": "worktree" },
+		);
+		expect(flat).toContain("`apply` control requires `isolated: true`");
+
+		const batch = await executeText(
+			{ context: "Shared.", tasks: [{ task: "Work.", isolated: false, apply: false }] },
+			{ "task.batch": true, "task.isolation.mode": "worktree" },
+		);
+		expect(batch).toContain("`apply` control requires `isolated: true`");
+		expect(runSubprocess).not.toHaveBeenCalled();
+	});
+
 	it("rejects duplicate provided names case-insensitively", async () => {
 		const text = await executeText(
 			{

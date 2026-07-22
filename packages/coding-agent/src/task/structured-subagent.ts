@@ -267,6 +267,9 @@ export async function resolveEffectiveSubagentPolicy(
 	const agentName = request.agent?.trim() || spawnPolicy.defaultAgent;
 	const planMode = request.session.getPlanModeState?.()?.enabled === true;
 	assertPlanControlsAllowed(request, planMode);
+	if (request.isolation?.apply !== undefined && request.isolation.requested !== true) {
+		throw new StructuredSubagentError("preflight", "Subagent `apply` control requires `isolated: true`.");
+	}
 	assertDepthAndSpawnAllowed(request, agentName);
 
 	const discovery = await discoverAgents(request.session.cwd);

@@ -16,6 +16,7 @@
 ### Fixed
 
 - Fixed MCP tools repeatedly unmounting and remounting mid-session when server names have overlapping sanitized prefixes (e.g. `atlassian` alongside an imported `atlassian:atlassian`), and stale tools remaining registered after disconnecting a server with special characters in its name.
+- Fixed `task` rejecting `apply` controls unless `isolated: true`, preventing capture-only intent from silently running in the parent checkout, and kept isolation/capture-only badges visible throughout progress and result rendering.
 ## [17.0.7] - 2026-07-21
 
 ### Fixed

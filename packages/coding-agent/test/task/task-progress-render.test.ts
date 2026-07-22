@@ -4,7 +4,7 @@ import type { SettingPath, SettingValue } from "@oh-my-pi/pi-coding-agent/config
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { taskToolRenderer } from "@oh-my-pi/pi-coding-agent/task/renderer";
-import type { AgentProgress, SingleResult, TaskToolDetails } from "@oh-my-pi/pi-coding-agent/task/types";
+import type { AgentProgress, SingleResult, TaskParams, TaskToolDetails } from "@oh-my-pi/pi-coding-agent/task/types";
 
 function runningProgress(overrides: Partial<AgentProgress> = {}): AgentProgress {
 	return {
@@ -150,6 +150,59 @@ describe("task progress rendering", () => {
 			),
 		);
 		expect(genericRow).not.toContain(`${theme.format.bracketLeft}task${theme.format.bracketRight}`);
+	});
+
+	it("keeps capture-only metadata through progress and result rendering", async () => {
+		const theme = (await getThemeByName("dark"))!;
+		setThemeInstance(theme);
+		const flatArgs: TaskParams = {
+			agent: "task",
+			task: "Capture the patch.",
+			isolated: true,
+			apply: false,
+		};
+		const flatProgress = taskToolRenderer.renderResult(
+			{ content: [{ type: "text", text: "" }], details: detailsFor(runningProgress({ id: "FlatCapture" })) },
+			{ expanded: false, isPartial: true, spinnerFrame: 0 },
+			theme,
+			flatArgs,
+		);
+		expect(Bun.stripANSI(flatProgress.render(120).join("\n")).split("\n")[0]).toContain("capture-only");
+
+		const batchArgs: TaskParams = {
+			context: "Shared.",
+			tasks: [
+				{ name: "Captured", task: "Capture.", isolated: true, apply: false },
+				{ name: "Applied", task: "Apply.", isolated: true },
+			],
+		};
+		const progressDetails: TaskToolDetails = {
+			projectAgentsDir: null,
+			results: [],
+			totalDurationMs: 0,
+			progress: [runningProgress({ index: 0, id: "Captured" }), runningProgress({ index: 1, id: "Applied" })],
+		};
+		const progressComponent = taskToolRenderer.renderResult(
+			{ content: [{ type: "text", text: "" }], details: progressDetails },
+			{ expanded: false, isPartial: true, spinnerFrame: 0 },
+			theme,
+			batchArgs,
+		);
+		expect(Bun.stripANSI(findRow(progressComponent, "Captured"))).toContain("[isolated, capture-only]");
+		expect(Bun.stripANSI(findRow(progressComponent, "Applied"))).toContain("[isolated]");
+
+		const resultDetails: TaskToolDetails = {
+			projectAgentsDir: null,
+			results: [finishedResult({ index: 0, id: "Captured" })],
+			totalDurationMs: 1,
+		};
+		const resultComponent = taskToolRenderer.renderResult(
+			{ content: [{ type: "text", text: "" }], details: resultDetails },
+			{ expanded: false, isPartial: false },
+			theme,
+			batchArgs,
+		);
+		expect(Bun.stripANSI(findRow(resultComponent, "Captured"))).toContain("[isolated, capture-only]");
 	});
 
 	it("shows the spawn count without a joined agent-type list in the header", async () => {
