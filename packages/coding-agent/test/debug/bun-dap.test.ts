@@ -39,7 +39,6 @@ describeExternalBunDap("external Bun DAP adapter", () => {
 	it("launches through bun-dap-x and stops on a source breakpoint", async () => {
 		const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-bun-dap-external-"));
 		const manager = new DapSessionManager();
-		const ownerId = `bun-dap-external-${Bun.randomUUIDv7()}`;
 		try {
 			const program = path.join(cwd, "app.ts");
 			await Bun.write(
@@ -53,10 +52,10 @@ describeExternalBunDap("external Bun DAP adapter", () => {
 				].join("\n"),
 			);
 			const realProgram = await fs.realpath(program);
-			await manager.setBreakpoint(program, 3, undefined, undefined, 10_000, { ownerId });
+			await manager.setBreakpoint(program, 3, undefined, undefined, 10_000);
 
 			const snapshot = await manager.launch(
-				{ ownerId, adapter: requireExternalBunAdapter(cwd), program, cwd },
+				{ adapter: requireExternalBunAdapter(cwd), program, cwd },
 				undefined,
 				30_000,
 			);
@@ -65,11 +64,9 @@ describeExternalBunDap("external Bun DAP adapter", () => {
 			expect(snapshot.status).toBe("stopped");
 			expect(snapshot.source?.path).toBe(realProgram);
 			expect(snapshot.line).toBe(3);
-			expect(
-				(await manager.evaluate("value", "repl", undefined, undefined, 10_000, { ownerId })).evaluation?.result,
-			).toBe("41");
+			expect((await manager.evaluate("value", "repl", undefined, undefined, 10_000)).evaluation?.result).toBe("41");
 		} finally {
-			await manager.terminate(undefined, 10_000, { ownerId }).catch(() => undefined);
+			await manager.terminate(undefined, 10_000).catch(() => undefined);
 			await fs.rm(cwd, { recursive: true, force: true });
 		}
 	}, 45_000);

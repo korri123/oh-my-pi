@@ -587,7 +587,6 @@ export interface DapStopLocation {
 
 export interface DapSessionSummary {
 	id: string;
-	ownerId: string;
 	adapter: string;
 	cwd: string;
 	program?: string;

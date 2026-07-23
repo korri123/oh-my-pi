@@ -17,7 +17,6 @@ import {
 	runStructuredSubagent,
 	StructuredSubagentError,
 	type StructuredSubagentRequest,
-	toStructuredSubagentIsolationControls,
 } from "@oh-my-pi/pi-coding-agent/task/structured-subagent";
 import type { AgentDefinition, SingleResult } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -32,7 +31,13 @@ const AGENT: AgentDefinition = {
 };
 
 function session(
-	options: { planMode?: boolean; outputSchema?: unknown; maxDepth?: number; isolationMode?: "none" | "worktree" } = {},
+	options: {
+		planMode?: boolean;
+		outputSchema?: unknown;
+		maxDepth?: number;
+		isolationMode?: "none" | "worktree";
+		isolationApply?: boolean;
+	} = {},
 ): ToolSession {
 	return {
 		cwd: "/tmp",
@@ -42,6 +47,7 @@ function session(
 			"task.maxRecursionDepth": options.maxDepth ?? 2,
 			"task.isolation.mode": options.isolationMode ?? "none",
 			"task.enableLsp": true,
+			...(options.isolationApply !== undefined ? { "task.isolation.apply": options.isolationApply } : {}),
 		}),
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
@@ -399,32 +405,32 @@ describe("structured subagent primitive", () => {
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
 	});
 
-	it("maps shared isolation controls and keeps apply enabled by default", async () => {
+	it("defaults task isolation to auto-apply and lets config retain artifacts", async () => {
 		mockDiscovery();
-		expect(toStructuredSubagentIsolationControls({ isolated: true, apply: false, merge: false })).toEqual({
-			requested: true,
-			merge: "patch",
-			apply: false,
-		});
-		expect(toStructuredSubagentIsolationControls({})).toBeUndefined();
-
-		const policy = await resolveEffectiveSubagentPolicy(
+		const defaultPolicy = await resolveEffectiveSubagentPolicy(
 			request({ session: session({ isolationMode: "worktree" }), isolation: { requested: true } }),
 		);
-		expect(policy.applyChanges).toBe(true);
+		expect(defaultPolicy.applyChanges).toBe(true);
+
+		const capturePolicy = await resolveEffectiveSubagentPolicy(
+			request({
+				session: session({ isolationMode: "worktree", isolationApply: false }),
+				isolation: { requested: true },
+			}),
+		);
+		expect(capturePolicy.applyChanges).toBe(false);
+
+		const evalPolicy = await resolveEffectiveSubagentPolicy(
+			request({
+				invocationKind: "eval",
+				session: session({ isolationMode: "worktree", isolationApply: false }),
+				isolation: { requested: true },
+			}),
+		);
+		expect(evalPolicy.applyChanges).toBe(true);
 	});
 
-	it("rejects apply controls unless isolation is explicitly requested", async () => {
-		const discover = vi.spyOn(discoveryModule, "discoverAgents");
-		for (const isolation of [{ apply: false }, { requested: false, apply: false }, { apply: true }]) {
-			await expect(resolveEffectiveSubagentPolicy(request({ isolation }))).rejects.toThrow(
-				"Subagent `apply` control requires `isolated: true`.",
-			);
-		}
-		expect(discover).not.toHaveBeenCalled();
-	});
-
-	it("retains successful isolated captures without merging when apply is false", async () => {
+	it("retains successful isolated task artifacts when auto-apply is disabled", async () => {
 		mockDiscovery();
 		let artifactsDir: string | undefined;
 		vi.spyOn(isolationRunner, "prepareIsolationContext").mockResolvedValue({ repoRoot: "/tmp" } as never);
@@ -436,15 +442,14 @@ describe("structured subagent primitive", () => {
 
 		const settled = await runStructuredSubagent(
 			request({
-				session: session({ isolationMode: "worktree" }),
-				isolation: { requested: true, apply: false },
+				session: session({ isolationMode: "worktree", isolationApply: false }),
+				isolation: { requested: true },
 			}),
 		);
 
 		expect(merge).not.toHaveBeenCalled();
 		expect(settled.changesApplied).toBeNull();
-		expect(settled.mergeSummary).toContain("apply=false");
-		expect(settled.mergeSummary).toContain("Not applied");
+		expect(settled.mergeSummary).toContain("/recovery/Worker.patch");
 		expect(artifactsDirsFromRegistry()).toContain(settled.artifactsDir);
 		expect(await fs.stat(artifactsDir ?? "")).toBeDefined();
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });

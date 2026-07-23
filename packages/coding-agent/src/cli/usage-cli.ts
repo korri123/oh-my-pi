@@ -409,7 +409,7 @@ function formatLimitLine(limit: UsageLimit, labelWidth: number, nowMs: number): 
 	const details: string[] = [describeAmount(limit)];
 	const resetsAt = limit.window?.resetsAt;
 	if (resetsAt !== undefined && resetsAt > nowMs) {
-		details.push(`resets in ${formatDuration(resetsAt - nowMs)}`);
+		details.push(`${limit.window?.resetLabel ?? "resets"} in ${formatDuration(resetsAt - nowMs)}`);
 	}
 	const lines = [
 		`      ${STATUS_COLOR[status]("●")} ${padded}  ${renderBar(limit)}  ${chalk.dim(details.join(" · "))}`,

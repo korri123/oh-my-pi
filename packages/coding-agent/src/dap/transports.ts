@@ -104,6 +104,7 @@ async function spawnTcpTransport({ adapter, cwd }: DapSpawnOptions): Promise<Dap
 	});
 
 	try {
+		await waitForTcpServerListening(proc, port, 250);
 		await waitForPortReady(host, port, 10_000, proc);
 	} catch (err) {
 		proc.kill();
@@ -386,6 +387,39 @@ function getFreePort(host: string): Promise<number> {
 		});
 	});
 	return promise;
+}
+
+/**
+ * Wait for the adapter to announce that it owns a selected TCP port before
+ * connecting. This avoids a connection landing on a just-released reservation
+ * listener in WSL2 mirrored networking.
+ */
+export async function waitForTcpServerListening(
+	proc: { stdout: ReadableStream<Uint8Array>; exitCode: number | null },
+	port: number,
+	timeoutMs: number,
+): Promise<void> {
+	const ready = Promise.withResolvers<void>();
+	const portText = String(port);
+	void (async () => {
+		try {
+			const decoder = new TextDecoder();
+			let buffered = "";
+			for await (const chunk of proc.stdout) {
+				buffered += decoder.decode(chunk, { stream: true });
+				if (buffered.includes(portText)) {
+					ready.resolve();
+				}
+				if (buffered.length > 4096) {
+					buffered = buffered.slice(-1024);
+				}
+			}
+		} catch {
+			/* the TCP connect loop surfaces the adapter failure */
+		}
+		ready.resolve();
+	})();
+	await Promise.race([ready.promise, Bun.sleep(timeoutMs)]);
 }
 
 function tryConnectTcp(host: string, port: number): Promise<void> {

@@ -1311,7 +1311,7 @@ export class CommandController {
 
 			compactingLoader.stop();
 			this.ctx.statusContainer.disposeChildren();
-			this.ctx.rebuildChatFromMessages();
+			this.ctx.rebuildChatFromMessages({ reuseSettledComponents: true });
 
 			this.ctx.statusLine.invalidate();
 			// Same as the auto-compaction rebuild: a collapsed transcript is an
@@ -1636,17 +1636,24 @@ function formatAggregateAmount(limits: UsageLimit[]): string {
 }
 
 function resolveResetRange(limits: UsageLimit[], nowMs: number): string | null {
-	const absolute = limits
-		.map(limit => limit.window?.resetsAt)
-		.filter((value): value is number => value !== undefined && Number.isFinite(value) && value > nowMs);
-	if (absolute.length === 0) return null;
-	const offsets = absolute.map(value => value - nowMs);
+	const windows = limits
+		.map(limit => limit.window)
+		.filter(
+			(window): window is NonNullable<UsageLimit["window"]> =>
+				window?.resetsAt !== undefined && Number.isFinite(window.resetsAt) && window.resetsAt > nowMs,
+		);
+	if (windows.length === 0) return null;
+	// Use the shared verb when every contributing window agrees (e.g. all "tick");
+	// mixed or absent labels fall back to the generic "resets".
+	const labels = new Set(windows.map(window => window.resetLabel ?? "resets"));
+	const verb = labels.size === 1 ? [...labels][0]! : "resets";
+	const offsets = windows.map(window => window.resetsAt! - nowMs);
 	const minReset = Math.min(...offsets);
 	const maxReset = Math.max(...offsets);
 	if (maxReset - minReset > 60_000) {
-		return `resets in ${formatDuration(minReset)}–${formatDuration(maxReset)}`;
+		return `${verb} in ${formatDuration(minReset)}–${formatDuration(maxReset)}`;
 	}
-	return `resets in ${formatDuration(minReset)}`;
+	return `${verb} in ${formatDuration(minReset)}`;
 }
 /**
  * Compact one-line quota summary for a single advisor's provider.
@@ -1857,17 +1864,34 @@ export function renderUsageReports(
 			for (const line of resetAccountLines) lines.push(uiTheme.fg("dim", line));
 		}
 
+		// Order account columns ONCE per provider (worst-first), then apply that
+		// same order to every window group. Sorting each group independently by
+		// its own used fraction (issue #6067) desynchronized the columns: an
+		// account exhausted on its 5h window but light on the weekly window would
+		// land in different column positions on each row, so the positional
+		// `account N` labels denoted different credentials per row and an
+		// exhausted limit appeared under a sibling that still had quota.
+		const accountRank = new Map<UsageReport, number>();
+		providerReports.forEach((report, position) => {
+			const worst = report.limits.reduce((max, limit) => {
+				const fraction = resolveUsedFraction(limit) ?? -1;
+				return fraction > max ? fraction : max;
+			}, -1);
+			// Encode worst-first primary key with the stable position as tiebreak
+			// so accounts tied on pressure keep their discovery order.
+			accountRank.set(report, -worst * 1000 + position);
+		});
+
 		const renderableGroups = Array.from(limitGroups.values()).map(group => {
 			const entries = group.limits.map((limit, index) => ({
 				limit,
 				report: group.reports[index],
-				fraction: resolveUsedFraction(limit),
 				index,
 			}));
 			entries.sort((a, b) => {
-				const aFraction = a.fraction ?? -1;
-				const bFraction = b.fraction ?? -1;
-				if (aFraction !== bFraction) return bFraction - aFraction;
+				const aRank = accountRank.get(a.report) ?? a.index;
+				const bRank = accountRank.get(b.report) ?? b.index;
+				if (aRank !== bRank) return aRank - bRank;
 				return a.index - b.index;
 			});
 			const sortedLimits = entries.map(entry => entry.limit);

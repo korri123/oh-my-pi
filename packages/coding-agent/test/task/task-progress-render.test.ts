@@ -520,7 +520,7 @@ describe("task result detail-less state", () => {
 			},
 			options,
 			theme,
-			{ agent: "explore", task: "Look around." },
+			{ agent: "scout", task: "Look around." },
 		);
 		const stripped = Bun.stripANSI(component.render(120).join("\n"));
 
@@ -528,7 +528,7 @@ describe("task result detail-less state", () => {
 		expect(stripped).toContain(theme.status.error);
 		expect(stripped).not.toContain(theme.status.done);
 		expect(stripped).toContain("Task");
-		expect(stripped).toContain("explore");
+		expect(stripped).toContain("scout");
 		expect(stripped).toContain("Validation failed");
 	});
 
@@ -537,7 +537,7 @@ describe("task result detail-less state", () => {
 		setThemeInstance(theme);
 		const options: RenderResultOptions = { expanded: false, isPartial: false };
 		const component = taskToolRenderer.renderResult({ content: [{ type: "text", text: "done" }] }, options, theme, {
-			agent: "explore",
+			agent: "scout",
 			task: "Look around.",
 		});
 		const stripped = Bun.stripANSI(component.render(120).join("\n"));

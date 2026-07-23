@@ -124,7 +124,9 @@ function renderUsageReports(
 				);
 				lines.push(`  ${renderAsciiBar(limit.amount.usedFraction)}`);
 				if (limit.window?.resetsAt && limit.window.resetsAt > nowMs) {
-					lines.push(`  resets in ${formatDuration(limit.window.resetsAt - nowMs)}`);
+					lines.push(
+						`  ${limit.window.resetLabel ?? "resets"} in ${formatDuration(limit.window.resetsAt - nowMs)}`,
+					);
 				}
 				if (limit.notes && limit.notes.length > 0)
 					lines.push(

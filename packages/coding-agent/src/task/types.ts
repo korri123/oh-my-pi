@@ -109,26 +109,29 @@ export const LABEL_MAX = 80;
 // Keep this explicit: ArkType serializes `unknown` as a boolean subschema, which llama.cpp grammars reject.
 const outputSchemaInputSchema = type("object | boolean | string | null");
 
-const TASK_ITEM_FIELDS = {
+export const taskItemSchema = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
+	"model?": "string | string[]",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
-} as const;
-const TASK_ISOLATION_FIELDS = {
+	"+": "delete",
+});
+const taskItemSchemaIsolated = type({
+	"name?": "string",
+	agent: "string = 'task'",
+	task: "string",
+	"model?": "string | string[]",
+	"outputSchema?": outputSchemaInputSchema,
+	"schemaMode?": '"permissive" | "strict"',
 	"isolated?": "boolean",
-	"apply?": "boolean",
-} as const;
+	"+": "delete",
+});
 
-export const taskItemSchema = type({ ...TASK_ITEM_FIELDS, "+": "delete" });
-const taskItemSchemaIsolated = type({ ...TASK_ITEM_FIELDS, ...TASK_ISOLATION_FIELDS, "+": "delete" });
-
-/** Model-facing controls for one task spawn's isolated worktree. */
+/** Internal isolation controls normalized before task execution. */
 export interface TaskIsolationControls {
-	/** Run this spawn in an isolated worktree. */
 	isolated?: boolean;
-	/** Apply isolated changes to the parent checkout; defaults to true. */
 	apply?: boolean;
 }
 
@@ -140,14 +143,33 @@ export interface TaskItem extends TaskIsolationControls {
 	agent?: string;
 	/** The work; required by the schema. */
 	task?: string;
+	/** Explicit model selector or fallback chain for this spawn, including optional reasoning suffixes. */
+	model?: string | string[];
 	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
 	outputSchema?: unknown;
 	/** Validation behavior for a caller-provided or inherited output schema. */
 	schemaMode?: "permissive" | "strict";
 }
 
-export const taskSchema = taskItemSchemaIsolated;
-const taskSchemaNoIsolation = taskItemSchema;
+export const taskSchema = type({
+	"name?": "string",
+	agent: "string = 'task'",
+	task: "string",
+	"model?": "string | string[]",
+	"outputSchema?": outputSchemaInputSchema,
+	"schemaMode?": '"permissive" | "strict"',
+	"isolated?": "boolean",
+	"+": "delete",
+});
+const taskSchemaNoIsolation = type({
+	"name?": "string",
+	agent: "string = 'task'",
+	task: "string",
+	"model?": "string | string[]",
+	"outputSchema?": outputSchemaInputSchema,
+	"schemaMode?": '"permissive" | "strict"',
+	"+": "delete",
+});
 const taskSchemaBatch = type({
 	context: "string",
 	tasks: taskItemSchemaIsolated.array(),
@@ -176,25 +198,64 @@ function taskAgentSchemaRule(defaultAgent: string): string {
 	return "string";
 }
 
-function createTaskItemSchema(agent: string, isolationEnabled: boolean): BaseType {
-	return type.raw({
-		...TASK_ITEM_FIELDS,
-		agent,
-		...(isolationEnabled ? TASK_ISOLATION_FIELDS : {}),
-		"+": "delete",
-	});
-}
-
 function createTaskSchema(options: {
 	isolationEnabled: boolean;
 	batchEnabled: boolean;
 	defaultAgent: string;
 }): BaseType {
-	const item = createTaskItemSchema(taskAgentSchemaRule(options.defaultAgent), options.isolationEnabled);
-	if (!options.batchEnabled) return item;
+	const agent = taskAgentSchemaRule(options.defaultAgent);
+	if (options.batchEnabled) {
+		if (options.isolationEnabled) {
+			const item = type.raw({
+				"name?": "string",
+				agent,
+				task: "string",
+				"model?": "string | string[]",
+				"outputSchema?": outputSchemaInputSchema,
+				"schemaMode?": '"permissive" | "strict"',
+				"isolated?": "boolean",
+				"+": "delete",
+			});
+			return type.raw({
+				context: "string",
+				tasks: item.array(),
+				"+": "delete",
+			});
+		}
+		const item = type.raw({
+			"name?": "string",
+			agent,
+			task: "string",
+			"model?": "string | string[]",
+			"outputSchema?": outputSchemaInputSchema,
+			"schemaMode?": '"permissive" | "strict"',
+			"+": "delete",
+		});
+		return type.raw({
+			context: "string",
+			tasks: item.array(),
+			"+": "delete",
+		});
+	}
+	if (options.isolationEnabled) {
+		return type.raw({
+			"name?": "string",
+			agent,
+			task: "string",
+			"model?": "string | string[]",
+			"outputSchema?": outputSchemaInputSchema,
+			"schemaMode?": '"permissive" | "strict"',
+			"isolated?": "boolean",
+			"+": "delete",
+		});
+	}
 	return type.raw({
-		context: "string",
-		tasks: item.array(),
+		"name?": "string",
+		agent,
+		task: "string",
+		"model?": "string | string[]",
+		"outputSchema?": outputSchemaInputSchema,
+		"schemaMode?": '"permissive" | "strict"',
 		"+": "delete",
 	});
 }
@@ -236,6 +297,8 @@ export interface TaskParams extends TaskIsolationControls {
 	agent?: string;
 	/** The work (flat form). */
 	task?: string;
+	/** Explicit model selector or fallback chain for the spawn, including optional reasoning suffixes. */
+	model?: string | string[];
 	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
 	outputSchema?: unknown;
 	/** Validation behavior for a caller-provided or inherited output schema. */
@@ -370,6 +433,8 @@ export interface AgentProgress {
 	modelOverride?: string | string[];
 	/** Resolved model display string in the form `<provider>/<id>`, optionally suffixed with `:<thinkingLevel>` when the level was set explicitly. Undefined when the model could not be resolved. */
 	resolvedModel?: string;
+	/** True when {@link resolvedModel} is the target of an active retry fallback (not the originally configured model). Lets observer-only UIs (collab guests, Agent Hub rows with no live session) flag the fallback and keep the provider. */
+	resolvedModelIsFallback?: boolean;
 	/** Data extracted by registered subprocess tool handlers (keyed by tool name) */
 	extractedToolData?: Record<string, unknown[]>;
 	/**
@@ -437,6 +502,8 @@ export interface SingleResult {
 	modelOverride?: string | string[];
 	/** Resolved model display string in the form `<provider>/<id>`, optionally suffixed with `:<thinkingLevel>` when the level was set explicitly. Omitted from tool-result JSON when undefined to keep wire payloads small. */
 	resolvedModel?: string;
+	/** True when {@link resolvedModel} is the target of an active retry fallback. Mirrors {@link AgentProgress.resolvedModelIsFallback} onto the settled result. */
+	resolvedModelIsFallback?: boolean;
 	error?: string;
 	aborted?: boolean;
 	abortReason?: string;

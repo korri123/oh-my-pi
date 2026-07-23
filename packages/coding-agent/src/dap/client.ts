@@ -8,6 +8,7 @@ import {
 	type DapWriteSink,
 	spawnDapTransport,
 } from "./transports";
+
 import type {
 	DapCapabilities,
 	DapClientState,
@@ -20,13 +21,11 @@ import type {
 	DapResponseMessage,
 } from "./types";
 
+export { waitForTcpServerListening } from "./transports";
+
 type DapEventHandler = (body: unknown, event: DapEventMessage) => void | Promise<void>;
 type DapReverseRequestHandler = (args: unknown) => unknown | Promise<unknown>;
 type DapResponseError = Partial<DapErrorBody> & { message?: string };
-
-interface DapEventWaiter {
-	reject(error: Error): void;
-}
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 /**
@@ -46,7 +45,7 @@ export class DapClient {
 	readonly cwd: string;
 	readonly proc: DapClientState["proc"];
 	/** TCP server port reused by child DAP sessions. */
-	readonly port?: number;
+	port?: number;
 	/** ReadableStream of DAP bytes — from proc.stdout (stdio) or a socket (socket mode). */
 	readonly #readable: ReadableStream<Uint8Array>;
 	/** Write sink — proc.stdin (stdio) or a socket (socket mode). */
@@ -64,9 +63,12 @@ export class DapClient {
 	#eventHandlers = new Map<string, Set<DapEventHandler>>();
 	#anyEventHandlers = new Set<DapEventHandler>();
 	#reverseRequestHandlers = new Map<string, DapReverseRequestHandler>();
-	#eventWaiters = new Set<DapEventWaiter>();
 	#adapterExited = false;
 	#pendingWriteExitRejectors = new Set<() => void>();
+	/** Rejectors for in-flight {@link waitForEvent} calls, woken when the
+	 *  transport closes so an event that can never arrive fails fast instead of
+	 *  waiting out its own timeout. */
+	#eventWaiterRejectors = new Set<(error: Error) => void>();
 
 	constructor(
 		adapter: DapResolvedAdapter,
@@ -133,8 +135,6 @@ export class DapClient {
 		void client.#startMessageReader();
 		return client;
 	}
-
-
 	get capabilities(): DapCapabilities | undefined {
 		return this.#capabilities;
 	}
@@ -196,13 +196,9 @@ export class DapClient {
 		const { promise, resolve, reject } = Promise.withResolvers<TBody>();
 		let timeout: NodeJS.Timeout | undefined;
 		let settled = false;
-		let waiter: DapEventWaiter | undefined;
-		let unsubscribe: (() => void) | undefined;
 		const cleanup = () => {
-			unsubscribe?.();
-			if (waiter) {
-				this.#eventWaiters.delete(waiter);
-			}
+			unsubscribe();
+			this.#eventWaiterRejectors.delete(closeHandler);
 			if (timeout) clearTimeout(timeout);
 			if (signal) {
 				signal.removeEventListener("abort", abortHandler);
@@ -214,16 +210,11 @@ export class DapClient {
 			cleanup();
 			reject(signal?.reason instanceof Error ? signal.reason : new ToolAbortError());
 		};
-		waiter = {
-			reject: error => {
-				if (settled) return;
-				settled = true;
-				cleanup();
-				reject(error);
-			},
+		const closeHandler = (error: Error) => {
+			cleanup();
+			reject(error);
 		};
-		this.#eventWaiters.add(waiter);
-		unsubscribe = this.onEvent(event, body => {
+		const unsubscribe = this.onEvent(event, body => {
 			const typedBody = body as TBody;
 			if (predicate && !predicate(typedBody)) {
 				return;
@@ -233,6 +224,7 @@ export class DapClient {
 			cleanup();
 			resolve(typedBody);
 		});
+		this.#eventWaiterRejectors.add(closeHandler);
 		if (signal) {
 			signal.addEventListener("abort", abortHandler, { once: true });
 		}
@@ -386,8 +378,7 @@ export class DapClient {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		const error = new Error(`DAP adapter ${this.adapter.name} disposed`);
-		this.#rejectPendingRequests(error);
-		this.#rejectEventWaiters(error);
+		this.#failConnection(error);
 		try {
 			this.#socket?.end();
 		} catch {
@@ -411,6 +402,7 @@ export class DapClient {
 
 		const framer = new MessageFramer(this.#messageBuffer);
 
+		let closeError: Error | undefined;
 		try {
 			while (true) {
 				const { done, value } = await reader.read();
@@ -450,15 +442,19 @@ export class DapClient {
 				}
 			}
 		} catch (error) {
-			const closeError = new Error(`DAP connection closed: ${toErrorMessage(error)}`);
-			this.#rejectPendingRequests(closeError);
-			this.#rejectEventWaiters(closeError);
+			closeError = new Error(`DAP connection closed: ${toErrorMessage(error)}`);
 		} finally {
 			// Persist any unparsed remainder so a restarted reader resumes mid-message.
 			this.#messageBuffer = framer.remainder();
 			reader.releaseLock();
 			this.#isReading = false;
 		}
+		// The transport is gone once the reader loop exits — on a thrown error
+		// or a clean stream end (a socket the peer dropped after we wrote, e.g.
+		// the WSL2-mirrored ghost-accept race in issue #6055). Fail every
+		// in-flight request and event waiter so callers see an immediate error
+		// instead of waiting out their own timeout.
+		this.#failConnection(closeError ?? new Error(`DAP connection closed: ${this.adapter.name} transport ended`));
 	}
 
 	#handleResponse(message: DapResponseMessage): void {
@@ -560,16 +556,25 @@ export class DapClient {
 				? `DAP adapter exited (code ${exitCode}): ${stderr}`
 				: `DAP adapter exited unexpectedly (code ${exitCode})`,
 		);
+		this.#failConnection(error);
+	}
+
+	/** Reject every in-flight request and wake every event waiter with `error`.
+	 *  Called when the transport dies (reader end, socket close, adapter exit)
+	 *  so nothing sits pending until its own timeout. */
+	#failConnection(error: Error): void {
 		this.#rejectPendingRequests(error);
-		this.#rejectEventWaiters(error);
+		const waiters = Array.from(this.#eventWaiterRejectors);
+		this.#eventWaiterRejectors.clear();
+		for (const reject of waiters) {
+			reject(error);
+		}
 	}
 
 	#handleTransportClose(): void {
 		if (this.#disposed || this.#transportClosed) return;
 		this.#transportClosed = true;
-		const error = new Error(`DAP adapter ${this.adapter.name} transport closed`);
-		this.#rejectPendingRequests(error);
-		this.#rejectEventWaiters(error);
+		this.#failConnection(new Error(`DAP connection closed: ${this.adapter.name} transport closed`));
 	}
 
 	#rejectPendingRequests(error: Error): void {
@@ -578,13 +583,4 @@ export class DapClient {
 		}
 		this.#pendingRequests.clear();
 	}
-
-	#rejectEventWaiters(error: Error): void {
-		const waiters = Array.from(this.#eventWaiters);
-		this.#eventWaiters.clear();
-		for (const waiter of waiters) {
-			waiter.reject(error);
-		}
-	}
-
 }

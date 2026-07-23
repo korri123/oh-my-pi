@@ -13,8 +13,6 @@ import type { DapAdapterConfig, DapCommandResolverName, DapResolvedAdapter, DapS
 
 const EXTENSIONLESS_DEBUGGER_ORDER: readonly string[] = ["gdb", "lldb-dap"];
 const DAP_SERVER_PATH_ARGUMENT = "$" + "{serverPath}";
-const JS_DEBUG_SERVER_ENV = "JS_DEBUG_DAP_SERVER";
-const DAP_PORT_ARGUMENT = "$" + "{port}";
 
 interface NormalizedConfig {
 	adapters: Record<string, unknown>;
@@ -213,52 +211,6 @@ function normalizeCommandForCwd(command: string, cwd: string): string {
 		return path.resolve(cwd, command);
 	}
 	return command;
-}
-
-function resolveJsDebugServerPath(cwd: string): string | null {
-	const configured = process.env[JS_DEBUG_SERVER_ENV];
-	const dataHome = process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share");
-	const candidates = [
-		...(configured ? [path.resolve(cwd, configured)] : []),
-		path.join(dataHome, "nvim", "mason", "packages", "js-debug-adapter", "js-debug", "src", "dapDebugServer.js"),
-		path.join(os.homedir(), ".local", "opt", "js-debug", "src", "dapDebugServer.js"),
-	];
-	for (const candidate of candidates) {
-		if (fs.existsSync(candidate)) return candidate;
-	}
-	return null;
-}
-
-function resolveDefaultJsDebugAdapter(
-	adapterName: string,
-	config: DapAdapterConfig,
-	cwd: string,
-	localRoots?: readonly string[],
-): DapResolvedAdapter | null | undefined {
-	if (adapterName !== "js-debug-adapter" || config.command !== "js-debug-adapter") {
-		return undefined;
-	}
-	const serverPath = resolveJsDebugServerPath(cwd);
-	if (!serverPath) return null;
-	const nodeCommand = resolveCommand("node", cwd, {
-		cache: WhichCachePolicy.Fresh,
-		PATH: process.env.PATH,
-		localRoots,
-	});
-	const resolvedCommand = nodeCommand ?? process.execPath;
-	return {
-		name: adapterName,
-		command: nodeCommand ? "node" : "bun",
-		args: [serverPath, DAP_PORT_ARGUMENT, "127.0.0.1"],
-		resolvedCommand,
-		languages: config.languages ?? [],
-		fileTypes: config.fileTypes ?? [],
-		rootMarkers: config.rootMarkers ?? [],
-		launchDefaults: config.launchDefaults ?? {},
-		attachDefaults: config.attachDefaults ?? {},
-		connectMode: "tcp",
-		acceptsDirectoryProgram: config.acceptsDirectoryProgram === true,
-	};
 }
 
 function resolveAdapterFromConfig(

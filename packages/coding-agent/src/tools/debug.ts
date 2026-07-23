@@ -126,6 +126,9 @@ const debugSchema = type({
 	"pid?": type("number").describe("process id for attach"),
 	"port?": type("number").describe("remote attach port"),
 	"host?": type("string").describe("remote attach host"),
+	"inspector_url?": type("string").describe("Bun inspector WebSocket URL for attach"),
+	"url?": type("string").describe("adapter-specific attach URL"),
+	"path?": type("string").describe("adapter-specific attach path"),
 	"levels?": type("number").describe("max stack frames"),
 	"memory_reference?": type("string").describe("memory reference or address"),
 	instruction_reference: "string?",
@@ -729,7 +732,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 		_onUpdate?: AgentToolUpdateCallback<DebugToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<DebugToolDetails>> {
-		const timeoutSec = clampTimeout("debug", params.timeout);
+		const timeoutSec = clampTimeout("debug", params.timeout, this.session.settings.get("tools.maxTimeout"));
 		const timeoutSignal = AbortSignal.timeout(timeoutSec * 1000);
 		const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 		const details: DebugToolDetails = { action: params.action, success: true };

@@ -11,7 +11,7 @@ import { Database, type Statement } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { getAgentDbPath, logger } from "@oh-my-pi/pi-utils";
+import { $env, getAgentDbPath, logger } from "@oh-my-pi/pi-utils";
 import type { ApiKeyResolver } from "./auth-retry";
 import * as AIError from "./error";
 import { isUsageLimitOutcome } from "./error/rate-limit";
@@ -57,6 +57,8 @@ import {
 	listCodexResetCredits,
 } from "./usage/openai-codex-reset";
 import { opencodeGoUsageProvider } from "./usage/opencode-go";
+import { syntheticUsageProvider } from "./usage/synthetic";
+import { xaiOauthUsageProvider } from "./usage/xai-oauth";
 import { zaiRankingStrategy, zaiUsageProvider } from "./usage/zai";
 
 const USAGE_RANKING_METRIC_EPSILON = 1e-9;
@@ -596,6 +598,8 @@ const DEFAULT_USAGE_PROVIDERS: UsageProvider[] = [
 	opencodeGoUsageProvider,
 	githubCopilotUsageProvider,
 	cursorUsageProvider,
+	syntheticUsageProvider,
+	xaiOauthUsageProvider,
 ];
 
 const DEFAULT_USAGE_PROVIDER_MAP = new Map<Provider, UsageProvider>(
@@ -3225,6 +3229,29 @@ export class AuthStorage {
 					this.#setStoredCredentials(providerId, dedupedEntries);
 				}
 				entries = dedupedEntries;
+			}
+
+			// SuperGrok billing only accepts OAuth bearers. Catalog envVars for
+			// xai-oauth are [XAI_OAUTH_TOKEN, XAI_API_KEY], so the generic path
+			// would (a) build api_key usage requests from stored keys / the paid
+			// API env var and (b) never fall through to XAI_OAUTH_TOKEN when a
+			// non-OAuth row is the only stored credential. Skip api_key material
+			// and only env-fallback to the dedicated OAuth bearer.
+			if (providerId === "xai-oauth") {
+				let hasUsableStoredOAuthCredential = false;
+				for (const entry of entries) {
+					if (entry.credential.type !== "oauth") continue;
+					const request = this.#buildUsageRequestForOauth(provider, entry.credential, baseUrl);
+					if (providerImpl.supports && !providerImpl.supports(request)) continue;
+					requests.push(request);
+					hasUsableStoredOAuthCredential = true;
+				}
+				const oauthToken = $env.XAI_OAUTH_TOKEN?.trim();
+				if (!hasUsableStoredOAuthCredential && oauthToken) {
+					const request = this.#buildUsageRequest(provider, { type: "oauth", accessToken: oauthToken }, baseUrl);
+					if (!providerImpl.supports || providerImpl.supports(request)) requests.push(request);
+				}
+				continue;
 			}
 
 			if (entries.length === 0) {

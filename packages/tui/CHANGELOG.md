@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `SelectList.setMaxVisible()` so hosts can refit the visible row budget to available height after construction.
+
+## [17.0.8] - 2026-07-22
+
+### Fixed
+
+- Fixed an issue where OSC 8 hyperlinks with inline markup corrupted Markdown table column widths.
+- Prevented duplicate autocomplete suggestions for slash commands and their matching aliases.
+- Fixed terminal background color detection during screen refreshes (Ctrl+L) inside tmux when passthrough is enabled.
+
 ## [17.0.6] - 2026-07-20
 
 ### Fixed

@@ -18,6 +18,7 @@ const TEST_ADAPTER: DapResolvedAdapter = {
 	rootMarkers: ["package.json"],
 	launchDefaults: { request: "launch", type: "pwa-node", stopOnEntry: true },
 	attachDefaults: { request: "attach", type: "pwa-node" },
+	debugConfigTypes: [],
 	connectMode: "tcp",
 	acceptsDirectoryProgram: false,
 };
