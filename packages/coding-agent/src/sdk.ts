@@ -2014,9 +2014,21 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// fresh cache written by the awaited pass, closing the double-fetch
 			// window.
 			await logger.time("resolveModelDiscoveryDeferredRetry", () => runtimeDiscoveryPromise);
-			const availableModelsAfterRuntime = modelRegistry.getAll();
+			const matchPreferences = getModelMatchPreferences(settings);
 			const runtimeResolved = deferredModelPatterns.some(pattern =>
-				availableModelsAfterRuntime.some(m => `${m.provider}/${m.id}` === pattern),
+				pattern.split(",").some(selector => {
+					const trimmedSelector = selector.trim();
+					if (!trimmedSelector) return false;
+					const resolved = resolveCliModel({
+						cliModel: trimmedSelector,
+						modelRegistry,
+						settings,
+						preferences: matchPreferences,
+					});
+					return Boolean(
+						resolved.model || (resolved.configuredPatterns && resolved.configuredPatterns.length > 0),
+					);
+				}),
 			);
 			if (!runtimeResolved && modelRegistry.getDiscoverableProviders().length > 0) {
 				await logger.time("resolveModelDiscoveryFallbackNonRuntime", () =>
@@ -2024,7 +2036,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				);
 			}
 			const availableModels = modelRegistry.getAll();
-			const matchPreferences = getModelMatchPreferences(settings);
 			const expandedModelPatterns = deferredModelPatterns.flatMap(pattern =>
 				pattern.split(",").flatMap(selector => {
 					const trimmedSelector = selector.trim();

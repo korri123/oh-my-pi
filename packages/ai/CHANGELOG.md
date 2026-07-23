@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [17.0.9] - 2026-07-23
+
 ### Added
 
 - Added Synthetic (synthetic.new) usage provider: `/usage` now reports the rolling 5-hour request limit and weekly credit quota via `GET /v2/quotas`, including per-tick regeneration rates in the window labels.

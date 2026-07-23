@@ -776,7 +776,7 @@ describe("Settings", () => {
 			expect(settings.get("grep.enabled")).toBe(true);
 		});
 
-		it("migrates nested dev.autoqa.consent and todo.reminders.max without enabling parents", async () => {
+		it("migrates nested dev.autoqa.consent and todo.reminders.max without configuring parents", async () => {
 			await writeSettings({
 				dev: { autoqa: { consent: "granted" } },
 				todo: { reminders: { max: 5 } },
@@ -785,7 +785,7 @@ describe("Settings", () => {
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 
 			expect(settings.get("dev.autoqaConsent")).toBe("granted");
-			expect(settings.get("dev.autoqa")).toBe(false);
+			expect(settings.get("dev.autoqa")).toBe(true);
 			expect(settings.isConfigured("dev.autoqa")).toBe(false);
 			expect(settings.get("todo.remindersMax")).toBe(5);
 			expect(settings.get("todo.reminders")).toBe(true);
@@ -798,7 +798,7 @@ describe("Settings", () => {
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 
 			expect(settings.get("dev.autoqaConsent")).toBe("denied");
-			expect(settings.get("dev.autoqa")).toBe(false);
+			expect(settings.isConfigured("dev.autoqa")).toBe(false);
 			expect(settings.get("todo.remindersMax")).toBe(2);
 			expect(settings.get("todo.reminders")).toBe(true);
 		});
@@ -812,7 +812,7 @@ describe("Settings", () => {
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 
 			expect(settings.get("dev.autoqaConsent")).toBe("granted");
-			expect(settings.get("dev.autoqa")).toBe(false);
+			expect(settings.isConfigured("dev.autoqa")).toBe(false);
 			expect(settings.get("todo.remindersMax")).toBe(9);
 			expect(settings.get("todo.reminders")).toBe(true);
 		});
@@ -837,7 +837,7 @@ describe("Settings", () => {
 					"dev.autoqa.consent": consent,
 				} as Partial<Record<SettingPath, unknown>>);
 				expect(settings.get("dev.autoqaConsent")).toBe(consent);
-				expect(settings.get("dev.autoqa")).toBe(false);
+				expect(settings.isConfigured("dev.autoqa")).toBe(false);
 			}
 		});
 
@@ -867,7 +867,7 @@ describe("Settings", () => {
 
 			const reloaded = await Settings.loadIsolated({ cwd: projectDir, agentDir });
 			expect(reloaded.get("dev.autoqaConsent")).toBe("denied");
-			expect(reloaded.get("dev.autoqa")).toBe(false);
+			expect(reloaded.isConfigured("dev.autoqa")).toBe(false);
 			expect(reloaded.get("todo.remindersMax")).toBe(1);
 			expect(reloaded.get("todo.reminders")).toBe(true);
 		});

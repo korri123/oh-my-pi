@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [17.0.9] - 2026-07-23
+
 ### Changed
 
 - Renamed `codex-auto-review` model to `GPT-5.3 Codex Spark` with updated pricing and capabilities
